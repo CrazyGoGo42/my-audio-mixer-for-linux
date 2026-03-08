@@ -1,0 +1,98 @@
+#!/bin/bash
+# Route known apps to their virtual audio sinks using pw-link.
+# This works correctly even when EasyEffects is active.
+# PipeWire remembers assignments, so this only needs to run once per app.
+
+route_app() {
+    local app_name="$1"
+    local target_sink="$2"
+    local label="$3"
+    local moved=0
+
+    # Check if the target sink exists
+    if ! pw-link -i 2>/dev/null | grep -q "^${target_sink}:"; then
+        echo "  ✗ Sink '$target_sink' not found"
+        return
+    fi
+
+    # Find all output ports matching this app
+    local ports
+    ports=$(pw-link -o 2>/dev/null | grep "^${app_name}:output_")
+
+    if [ -z "$ports" ]; then
+        echo "  - No active $label streams found"
+        return
+    fi
+
+    # Disconnect from any current sink and connect to target
+    while IFS= read -r out_port; do
+        local channel
+        channel=$(echo "$out_port" | grep -oP 'output_\K.*')
+
+        # Remove existing links from this port
+        local current_links
+        current_links=$(pw-link -l 2>/dev/null | grep -A1 "^${out_port}$" | grep "|->")
+        while IFS= read -r link_line; do
+            local dest
+            dest=$(echo "$link_line" | sed 's/.*|-> //')
+            [ -n "$dest" ] && pw-link -d "$out_port" "$dest" 2>/dev/null
+        done <<< "$current_links"
+
+        # Connect to target sink
+        local target_port="${target_sink}:playback_${channel}"
+        pw-link "$out_port" "$target_port" 2>/dev/null && moved=$((moved + 1))
+    done <<< "$ports"
+
+    if [ $moved -gt 0 ]; then
+        echo "  ✓ Routed $label → $target_sink ($moved ports)"
+    else
+        echo "  ✗ Failed to route $label"
+    fi
+}
+
+echo "Routing apps to virtual sinks..."
+echo ""
+
+# Discord
+DISCORD_NAME=$(pw-link -o 2>/dev/null | grep ":output_" | grep -oP '^[^:]+' | sort -u | grep -iE "^discord$" | head -1)
+if [ -n "$DISCORD_NAME" ]; then
+    route_app "$DISCORD_NAME" "Discord_Audio" "Discord"
+else
+    echo "  - No active Discord streams found"
+fi
+
+# YouTube Music (shows as various names)
+YTM_NAME=$(pw-link -o 2>/dev/null | grep -oP '^[^:]+' | sort -u | grep -iE "youtube|ytmusic" | head -1)
+if [ -n "$YTM_NAME" ]; then
+    route_app "$YTM_NAME" "Music_Audio" "YouTube Music"
+else
+    echo "  - No active YouTube Music streams found"
+fi
+
+# Spotify
+SPOTIFY_NAME=$(pw-link -o 2>/dev/null | grep -oP '^[^:]+' | sort -u | grep -i "spotify" | head -1)
+if [ -n "$SPOTIFY_NAME" ]; then
+    route_app "$SPOTIFY_NAME" "Music_Audio" "Spotify"
+else
+    echo "  - No active Spotify streams found"
+fi
+
+# Browsers — match all Chromium-based and Firefox, but skip Discord/YouTube Music/Spotify
+echo ""
+echo "  Scanning for browsers..."
+BROWSER_NAMES=$(pw-link -o 2>/dev/null | grep ":output_" | grep -oP '^[^:]+' | sort -u | \
+    grep -ivE "discord|youtube|ytmusic|spotify|easyeffects|pipewire|wireplumber|gnome|mutter|xdg|gjs|_Audio_out" | \
+    grep -iE "chrome|chromium|google|firefox|brave|vivaldi|opera|edge")
+
+if [ -n "$BROWSER_NAMES" ]; then
+    while IFS= read -r name; do
+        route_app "$name" "Browser_Audio" "$name"
+    done <<< "$BROWSER_NAMES"
+else
+    echo "  - No active browser streams found"
+fi
+
+echo ""
+echo "Done! PipeWire will remember these assignments for future sessions."
+echo ""
+echo "Tip: If an app doesn't appear, make sure it's playing audio, then re-run this script."

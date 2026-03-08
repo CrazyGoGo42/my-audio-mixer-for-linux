@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""
+Persistent volume OSD daemon — always-on-top, centered on primary monitor.
+Uses X11 override-redirect for guaranteed always-on-top without window manager interference.
+
+Send commands via: echo "Label 75" > /tmp/audio-osd.fifo
+                   echo "Label muted" > /tmp/audio-osd.fifo
+"""
+
+import os
+import re
+import subprocess
+import threading
+import time
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk, GLib, Gio
+
+FIFO_PATH = "/tmp/audio-osd.fifo"
+PIDFILE = "/tmp/audio-osd.pid"
+HIDE_DELAY_MS = 1000
+WIDTH = 300
+HEIGHT = 56
+TOP_MARGIN = 48
+
+# Theme colors: (bg_rgba, text_color, bar_trough, bar_progress, mute_color)
+DARK_THEME = (
+    (0.118, 0.118, 0.118, 0.88),
+    "#ffffff",
+    "rgba(255, 255, 255, 0.15)",
+    "#3584e4",
+    "#ff6b6b",
+)
+LIGHT_THEME = (
+    (0.95, 0.95, 0.95, 0.92),
+    "#1e1e1e",
+    "rgba(0, 0, 0, 0.12)",
+    "#1c71d8",
+    "#e01b24",
+)
+
+
+def get_primary_monitor_geometry():
+    """Get primary monitor x, y, width, height from xrandr."""
+    try:
+        out = subprocess.check_output(["xrandr", "--current"], text=True)
+        for line in out.splitlines():
+            if "primary" in line and " connected" in line:
+                m = re.search(r'(\d+)x(\d+)\+(\d+)\+(\d+)', line)
+                if m:
+                    return int(m.group(3)), int(m.group(4)), int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    # Fallback: assume single monitor at 0,0
+    screen = Gdk.Screen.get_default()
+    return 0, 0, screen.get_width(), screen.get_height()
+
+
+class OSDWindow(Gtk.Window):
+    def __init__(self):
+        super().__init__(type=Gtk.WindowType.POPUP)
+
+        self.set_default_size(WIDTH, HEIGHT)
+        self.set_app_paintable(True)
+        self.set_keep_above(True)
+        self.set_skip_taskbar_hint(True)
+        self.set_skip_pager_hint(True)
+        self.set_accept_focus(False)
+        self.set_decorated(False)
+
+        screen = self.get_screen()
+        visual = screen.get_rgba_visual()
+        if visual:
+            self.set_visual(visual)
+
+        # Layout
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+
+        self.label = Gtk.Label()
+        self.label.set_halign(Gtk.Align.CENTER)
+        box.add(self.label)
+
+        self.bar = Gtk.ProgressBar()
+        self.bar.set_name("osd-bar")
+        box.add(self.bar)
+
+        self.add(box)
+
+        self.connect("draw", self._on_draw)
+
+        self.css_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_screen(
+            screen, self.css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+        # Detect theme and listen for changes
+        self.theme = DARK_THEME
+        self._detect_theme()
+
+        self.settings = Gio.Settings.new("org.gnome.desktop.interface")
+        self.settings.connect("changed::color-scheme", lambda *_: self._detect_theme())
+
+        # Position on primary monitor
+        mon_x, mon_y, mon_w, mon_h = get_primary_monitor_geometry()
+        self.osd_x = mon_x + (mon_w - WIDTH) // 2
+        self.osd_y = mon_y + TOP_MARGIN
+        self.move(self.osd_x, self.osd_y)
+
+        self.hide_timer = None
+
+    def _detect_theme(self):
+        try:
+            scheme = self.settings.get_string("color-scheme") if hasattr(self, 'settings') else \
+                subprocess.check_output(
+                    ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+                    text=True
+                ).strip().strip("'")
+        except Exception:
+            scheme = "prefer-dark"
+
+        self.theme = LIGHT_THEME if "light" in scheme else DARK_THEME
+        self._apply_css()
+        self.queue_draw()
+
+    def _apply_css(self):
+        _, text_color, bar_trough, bar_progress, _ = self.theme
+        self.css_provider.load_from_data(f"""
+            label {{
+                color: {text_color};
+                font-size: 13px;
+                font-weight: bold;
+            }}
+            #osd-bar trough {{
+                min-height: 6px;
+                border-radius: 3px;
+                background-color: {bar_trough};
+            }}
+            #osd-bar progress {{
+                min-height: 6px;
+                border-radius: 3px;
+                background-color: {bar_progress};
+            }}
+        """.encode())
+
+    def _on_draw(self, widget, cr):
+        """Draw rounded rectangle background with cairo."""
+        w = widget.get_allocated_width()
+        h = widget.get_allocated_height()
+        r = 14  # corner radius
+
+        # Clear to fully transparent
+        cr.set_operator(0)  # CAIRO_OPERATOR_CLEAR
+        cr.paint()
+        cr.set_operator(2)  # CAIRO_OPERATOR_OVER
+
+        # Draw rounded rect
+        cr.new_sub_path()
+        cr.arc(w - r, r, r, -1.5708, 0)        # top-right
+        cr.arc(w - r, h - r, r, 0, 1.5708)      # bottom-right
+        cr.arc(r, h - r, r, 1.5708, 3.14159)    # bottom-left
+        cr.arc(r, r, r, 3.14159, 4.71239)       # top-left
+        cr.close_path()
+
+        cr.set_source_rgba(*self.theme[0])
+        cr.fill()
+
+        return False  # propagate to draw children
+
+    def show_osd(self, label_text, value):
+        muted = value == "muted"
+        percent = 0 if muted else min(int(value), 150)
+
+        if muted:
+            mute_color = self.theme[4]
+            self.label.set_markup(f"{label_text}  —  <span color='{mute_color}'>Muted</span>")
+            self.bar.set_fraction(0.0)
+        else:
+            self.label.set_markup(f"{label_text}  —  {percent}%")
+            self.bar.set_fraction(min(percent / 100.0, 1.0))
+
+        self.move(self.osd_x, self.osd_y)
+        self.show_all()
+
+        if self.hide_timer:
+            GLib.source_remove(self.hide_timer)
+        self.hide_timer = GLib.timeout_add(HIDE_DELAY_MS, self._hide)
+
+    def _hide(self):
+        self.hide()
+        self.hide_timer = None
+        return False
+
+
+def fifo_listener(osd_win):
+    while True:
+        try:
+            with open(FIFO_PATH, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line == "QUIT":
+                        GLib.idle_add(Gtk.main_quit)
+                        return
+                    parts = line.rsplit(" ", 1)
+                    if len(parts) == 2:
+                        GLib.idle_add(osd_win.show_osd, parts[0], parts[1])
+        except Exception:
+            time.sleep(0.1)
+
+
+def main():
+    # Kill previous instance
+    try:
+        with open(PIDFILE) as f:
+            old_pid = int(f.read().strip())
+        os.kill(old_pid, 9)
+    except Exception:
+        pass
+
+    # Create FIFO
+    try:
+        os.unlink(FIFO_PATH)
+    except FileNotFoundError:
+        pass
+    os.mkfifo(FIFO_PATH)
+
+    # Write PID
+    with open(PIDFILE, "w") as f:
+        f.write(str(os.getpid()))
+
+    osd = OSDWindow()
+
+    thread = threading.Thread(target=fifo_listener, args=(osd,), daemon=True)
+    thread.start()
+
+    Gtk.main()
+
+    # Cleanup
+    try:
+        os.unlink(FIFO_PATH)
+        os.unlink(PIDFILE)
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    main()
