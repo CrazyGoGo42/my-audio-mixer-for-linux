@@ -5,19 +5,8 @@
 STEP="1%"
 FIFO="/tmp/audio-osd.fifo"
 
-# Cache desktop sink name (regenerated if stale)
-CACHE="/tmp/audio-mixer-hw-sink"
-
 case "$1" in
-    desktop)
-        # Use cached sink name, refresh if missing or older than 60s
-        if [ -f "$CACHE" ] && [ $(($(date +%s) - $(stat -c %Y "$CACHE"))) -lt 60 ]; then
-            SINK=$(<"$CACHE")
-        else
-            SINK=$(pactl list sinks short | grep -m1 -v -E "easyeffects|Discord_Audio|Music_Audio|Browser_Audio|hdmi" | grep -o 'alsa_output[^ ]*')
-            echo "$SINK" > "$CACHE"
-        fi
-        L="Desktop" ;;
+    games) SINK="Games_Audio"; L="Games" ;;
     discord) SINK="Discord_Audio"; L="Discord" ;;
     music)   SINK="Music_Audio";   L="Music"   ;;
     browser) SINK="Browser_Audio"; L="Browser" ;;
@@ -40,11 +29,13 @@ case "$2" in
             echo "$L ${V// }" > "$FIFO" & ;;
         esac ;;
     down)
+        pactl set-sink-mute "$SINK" 0
         pactl set-sink-volume "$SINK" "-${STEP}"
         V=$(pactl get-sink-volume "$SINK")
         V=${V#*/ }; V=${V%%%*}
         echo "$L ${V// }" > "$FIFO" & ;;
     up)
+        pactl set-sink-mute "$SINK" 0
         pactl set-sink-volume "$SINK" "+${STEP}"
         V=$(pactl get-sink-volume "$SINK")
         V=${V#*/ }; V=${V%%%*}

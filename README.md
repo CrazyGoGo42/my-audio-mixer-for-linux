@@ -40,7 +40,7 @@ The installer checks all requirements and installs any missing dependencies (`pa
 ## Install
 
 ```bash
-git clone https://github.com/CrazyGoGo42/my-audio-mixer-for-linux.git
+git clone https://github.com/YOUR_USER/audio-mixer-linux.git
 cd audio-mixer-linux
 chmod +x install.sh
 ./install.sh

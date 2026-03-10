@@ -1,96 +1,157 @@
 #!/bin/bash
-# Route known apps to their virtual audio sinks using pw-link.
-# This works correctly even when EasyEffects is active.
-# PipeWire remembers assignments, so this only needs to run once per app.
-
-route_app() {
-    local app_name="$1"
-    local target_sink="$2"
-    local label="$3"
-    local moved=0
-
-    # Check if the target sink exists
-    if ! pw-link -i 2>/dev/null | grep -q "^${target_sink}:"; then
-        echo "  ✗ Sink '$target_sink' not found"
-        return
-    fi
-
-    # Find all output ports matching this app
-    local ports
-    ports=$(pw-link -o 2>/dev/null | grep "^${app_name}:output_")
-
-    if [ -z "$ports" ]; then
-        echo "  - No active $label streams found"
-        return
-    fi
-
-    # Disconnect from any current sink and connect to target
-    while IFS= read -r out_port; do
-        local channel
-        channel=$(echo "$out_port" | grep -oP 'output_\K.*')
-
-        # Remove existing links from this port
-        local current_links
-        current_links=$(pw-link -l 2>/dev/null | grep -A1 "^${out_port}$" | grep "|->")
-        while IFS= read -r link_line; do
-            local dest
-            dest=$(echo "$link_line" | sed 's/.*|-> //')
-            [ -n "$dest" ] && pw-link -d "$out_port" "$dest" 2>/dev/null
-        done <<< "$current_links"
-
-        # Connect to target sink
-        local target_port="${target_sink}:playback_${channel}"
-        pw-link "$out_port" "$target_port" 2>/dev/null && moved=$((moved + 1))
-    done <<< "$ports"
-
-    if [ $moved -gt 0 ]; then
-        echo "  ✓ Routed $label → $target_sink ($moved ports)"
-    else
-        echo "  ✗ Failed to route $label"
-    fi
-}
+# Route known apps to their virtual audio sinks.
+# Uses pw-dump for binary-name matching and pactl move-sink-input for routing.
+# WirePlumber saves these assignments permanently — only run once per new app.
+#
+# Routing logic:
+#   Discord           → Discord_Audio
+#   YouTube Music     → Music_Audio
+#   Spotify           → Music_Audio
+#   Browsers          → Browser_Audio
+#   Everything else   → Games_Audio
 
 echo "Routing apps to virtual sinks..."
 echo ""
 
-# Discord
-DISCORD_NAME=$(pw-link -o 2>/dev/null | grep ":output_" | grep -oP '^[^:]+' | sort -u | grep -iE "^discord$" | head -1)
-if [ -n "$DISCORD_NAME" ]; then
-    route_app "$DISCORD_NAME" "Discord_Audio" "Discord"
-else
-    echo "  - No active Discord streams found"
-fi
+python3 << 'PYEOF'
+import json, subprocess, sys, os, re
 
-# YouTube Music (shows as various names)
-YTM_NAME=$(pw-link -o 2>/dev/null | grep -oP '^[^:]+' | sort -u | grep -iE "youtube|ytmusic" | head -1)
-if [ -n "$YTM_NAME" ]; then
-    route_app "$YTM_NAME" "Music_Audio" "YouTube Music"
-else
-    echo "  - No active YouTube Music streams found"
-fi
+def run(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    return r.stdout.strip()
 
-# Spotify
-SPOTIFY_NAME=$(pw-link -o 2>/dev/null | grep -oP '^[^:]+' | sort -u | grep -i "spotify" | head -1)
-if [ -n "$SPOTIFY_NAME" ]; then
-    route_app "$SPOTIFY_NAME" "Music_Audio" "Spotify"
-else
-    echo "  - No active Spotify streams found"
-fi
+RESTORE_FILE = os.path.expanduser("~/.local/state/wireplumber/restore-stream")
 
-# Browsers — match all Chromium-based and Firefox, but skip Discord/YouTube Music/Spotify
-echo ""
-echo "  Scanning for browsers..."
-BROWSER_NAMES=$(pw-link -o 2>/dev/null | grep ":output_" | grep -oP '^[^:]+' | sort -u | \
-    grep -ivE "discord|youtube|ytmusic|spotify|easyeffects|pipewire|wireplumber|gnome|mutter|xdg|gjs|_Audio_out" | \
-    grep -iE "chrome|chromium|google|firefox|brave|vivaldi|opera|edge")
+def persist_target(app_name, target_sink):
+    """Write the routing target into WirePlumber's restore-stream database."""
+    if not os.path.isfile(RESTORE_FILE):
+        return
+    # Escape special chars for WirePlumber's key format
+    escaped = app_name.replace("\\", "\\\\").replace(" ", "\\s").replace("[", "\\o").replace("]", "\\c")
+    key = f"Output/Audio:application.name:{escaped}"
+    target_line = f"{key}:target={target_sink}\n"
 
-if [ -n "$BROWSER_NAMES" ]; then
-    while IFS= read -r name; do
-        route_app "$name" "Browser_Audio" "$name"
-    done <<< "$BROWSER_NAMES"
-else
-    echo "  - No active browser streams found"
-fi
+    lines = open(RESTORE_FILE).readlines()
+    # Check if target line already exists with correct value
+    target_key = f"{key}:target="
+    found = False
+    new_lines = []
+    for line in lines:
+        if line.startswith(target_key):
+            new_lines.append(target_line)
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        # Insert after the last line for this app (before volume line)
+        volume_key = f"{key}:volume="
+        inserted = False
+        final = []
+        for line in new_lines:
+            final.append(line)
+            if not inserted and line.startswith(volume_key):
+                final.append(target_line)
+                inserted = True
+        if not inserted:
+            # App not in file yet — append a block
+            final.append(f"{key}:channelMap=FL;FR;\n")
+            final.append(f"{key}:channelVolumes=1.0;1.0;\n")
+            final.append(f"{key}:mute=false\n")
+            final.append(target_line)
+            final.append(f"{key}:volume=1.0\n")
+        new_lines = final
+    open(RESTORE_FILE, "w").writelines(new_lines)
+
+# Parse PipeWire graph
+data = json.loads(run(["pw-dump"]))
+
+# Build lookups in a single pass
+nodes = {}       # node_id -> {name, binary, app, media_class, serial}
+sinks = set()    # sink names
+
+for obj in data:
+    obj_id = obj.get("id")
+    if obj.get("type") != "PipeWire:Interface:Node":
+        continue
+    props = obj.get("info", {}).get("props", {})
+    mc = props.get("media.class", "")
+    nodes[obj_id] = {
+        "name": props.get("node.name", ""),
+        "binary": props.get("application.process.binary", ""),
+        "app": props.get("application.name", ""),
+        "media_class": mc,
+        "serial": str(props.get("object.serial", "")),
+    }
+    if mc == "Audio/Sink":
+        sinks.add(props.get("node.name", ""))
+
+# Routing rules by binary name
+ROUTING = {
+    "discord": ("Discord_Audio", "Discord"),
+    "youtube-music": ("Music_Audio", "YouTube Music"),
+    "youtubemusic": ("Music_Audio", "YouTube Music"),
+    "spotify": ("Music_Audio", "Spotify"),
+    "plexamp": ("Music_Audio", "Plexamp"),
+}
+BROWSERS = {"chrome", "chromium", "chromium-browser", "google-chrome-stable",
+            "firefox", "firefox-esr", "brave", "brave-browser",
+            "vivaldi", "vivaldi-stable", "opera", "msedge"}
+
+def get_target(binary):
+    bl = binary.lower()
+    if bl in ROUTING:
+        return ROUTING[bl]
+    if bl in BROWSERS:
+        return "Browser_Audio", bl.title()
+    return "Games_Audio", bl
+
+# Parse pactl sink-inputs to get index→serial mapping
+pactl_out = run(["pactl", "list", "sink-inputs"])
+serial_to_idx = {}
+current_idx = None
+for line in pactl_out.split("\n"):
+    line = line.strip()
+    if line.startswith("Sink Input #"):
+        current_idx = line.split("#")[1]
+    elif "object.serial" in line and "=" in line:
+        serial = line.split("=")[1].strip().strip('"')
+        if current_idx and serial:
+            serial_to_idx[serial] = current_idx
+
+# Route audio streams
+routed = 0
+for nid, node in nodes.items():
+    if node["media_class"] != "Stream/Output/Audio":
+        continue
+    if not node["binary"] or node["name"].endswith("_out"):
+        continue
+
+    target_sink, label = get_target(node["binary"])
+
+    if target_sink not in sinks:
+        print(f"  ✗ Sink '{target_sink}' not found — is PipeWire running?")
+        continue
+
+    pactl_idx = serial_to_idx.get(node["serial"])
+    if not pactl_idx:
+        print(f"  ✗ Could not find pactl index for {label} ({node['app'] or node['name']})")
+        continue
+
+    result = subprocess.run(
+        ["pactl", "move-sink-input", pactl_idx, target_sink],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        print(f"  ✓ {label} ({node['app'] or node['name']}) → {target_sink}")
+        routed += 1
+        persist_target(node["app"] or node["name"], target_sink)
+    else:
+        print(f"  ✗ Failed to route {label}: {result.stderr.strip()}")
+
+if routed == 0:
+    print("  No audio streams found. Make sure apps are playing audio.")
+
+PYEOF
 
 echo ""
 echo "Done! PipeWire will remember these assignments for future sessions."
