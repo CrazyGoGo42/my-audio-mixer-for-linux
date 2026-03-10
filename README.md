@@ -2,9 +2,9 @@
 
 A lightweight VoiceMeeter Potato alternative for Linux. Control individual app volumes with keyboard shortcuts — separate channels for games, Discord, music, and browsers.
 
-![PipeWire](https://img.shields.io/badge/PipeWire-required-blue)
-![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%2B-orange)
-![GNOME](https://img.shields.io/badge/GNOME-required-green)
+[![PipeWire](https://img.shields.io/badge/PipeWire-required-blue)](https://pipewire.org/)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%2B-orange)](https://ubuntu.com/)
+[![GNOME](https://img.shields.io/badge/GNOME-required-green)](https://www.gnome.org/)
 
 ## The Problem
 
@@ -50,35 +50,34 @@ The installer will:
 
 1. Check your system (PipeWire, WirePlumber, Python, GTK)
 2. Install missing dependencies (`pavucontrol`, `xdotool`)
-3. Create 3 virtual audio sinks (Discord, Music, Browser)
+3. Create 4 virtual audio sinks (Games, Discord, Music, Browser)
 4. Set up 12 keyboard shortcuts
 5. Start the OSD overlay daemon (auto-starts on login)
+6. Start the router daemon (auto-starts on login)
 
-## First-Time App Routing
+## Automatic App Routing
 
-After install, you need to tell PipeWire which apps go to which channel. **This only needs to be done once per app** — PipeWire remembers the assignment permanently.
+The **router daemon** runs in the background and watches for new audio streams. It handles routing automatically:
 
-1. Open the apps you want to route (Discord, Chrome, Spotify, etc.)
-2. **Play some audio** in each app (PipeWire only sees apps that are producing sound)
-3. Run:
+- **Known apps** (Discord, Chrome, Firefox, Spotify, Plexamp, etc.) are routed silently to the correct channel.
+- **Unknown apps** trigger a popup dialog asking which channel to use.
+- All choices are saved permanently in WirePlumber's database — the daemon only asks once per app.
+
+This means everything works automatically after every reboot. No manual steps needed.
+
+### Manual Routing
+
+You can also route apps manually at any time:
 
 ```bash
 audio-route-apps
 ```
 
-Example output:
+Or use `pavucontrol` (PulseAudio Volume Control) to assign apps in its Playback tab.
 
-```
-Routing apps to virtual sinks...
+### Smart Unmute
 
-  ✓ Routed Discord → Discord_Audio (2 ports)
-  ✓ Routed YouTube Music → Music_Audio (2 ports)
-  ✓ Routed Google Chrome → Browser_Audio (2 ports)
-
-Done! PipeWire will remember these assignments for future sessions.
-```
-
-Alternatively, use `pavucontrol` (PulseAudio Volume Control) to manually assign apps in its Playback tab.
+Pressing volume up or down on a muted channel automatically unmutes it.
 
 ## Works With EasyEffects
 
@@ -98,13 +97,14 @@ Removes everything the installer created (scripts, config, shortcuts, OSD daemon
 
 ## How It Works
 
-| Component               | What it does                                                             |
-| ----------------------- | ------------------------------------------------------------------------ |
-| `virtual-sinks.conf`    | PipeWire config that creates 3 virtual audio sinks on boot               |
-| `audio-channel-control` | Bash script (~20ms per call) that adjusts volume/mute via `pactl`        |
-| `audio-osd`             | Persistent Python/GTK3 daemon that shows a volume overlay via named pipe |
-| `audio-route-apps`      | Uses `pw-link` to wire apps to their virtual sinks                       |
-| GNOME shortcuts         | 12 custom keybindings that call `audio-channel-control`                  |
+| Component               | What it does                                                               |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `virtual-sinks.conf`    | PipeWire config that creates 4 virtual audio sinks on boot                 |
+| `audio-channel-control` | Bash script (~20ms per call) that adjusts volume/mute via `pactl`          |
+| `audio-osd`             | Persistent Python/GTK3 daemon that shows a volume overlay via named pipe   |
+| `audio-router-daemon`   | Background daemon that auto-routes known apps and prompts for unknown ones |
+| `audio-route-apps`      | Manual one-shot routing of all currently playing apps                      |
+| GNOME shortcuts         | 12 custom keybindings that call `audio-channel-control`                    |
 
 ### Architecture
 
@@ -134,9 +134,11 @@ Removes everything the installer created (scripts, config, shortcuts, OSD daemon
 ```
 ~/.local/bin/audio-osd                                    # OSD overlay daemon
 ~/.local/bin/audio-channel-control                        # Volume/mute control
-~/.local/bin/audio-route-apps                             # App → sink routing
+~/.local/bin/audio-route-apps                             # Manual app → sink routing
+~/.local/bin/audio-router-daemon                          # Auto-routing background daemon
 ~/.config/pipewire/pipewire.conf.d/virtual-sinks.conf     # Virtual sink definitions
 ~/.config/autostart/audio-osd.desktop                     # OSD autostart on login
+~/.config/autostart/audio-router-daemon.desktop           # Router daemon autostart on login
 + 12 GNOME custom keyboard shortcuts
 ```
 
