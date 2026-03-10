@@ -16,12 +16,12 @@ This project creates **4 independent audio channels** using PipeWire virtual sin
 
 ### Channels & Keybindings
 
-| Channel | What goes here                        | Mute          | Vol Down    | Vol Up      |
-| ------- | ------------------------------------- | ------------- | ----------- | ----------- |
-| Desktop | Games, system sounds, everything else | `Ctrl+Num1`   | `Ctrl+Num4` | `Ctrl+Num7` |
-| Discord | Discord voice/audio                   | `Ctrl+Num2`   | `Ctrl+Num5` | `Ctrl+Num8` |
-| Music   | YouTube Music, Spotify                | `Ctrl+Num3`   | `Ctrl+Num6` | `Ctrl+Num9` |
-| Browser | Chrome, Firefox, Brave, etc.          | `Ctrl+NumDel` | `Ctrl+Num+` | `Ctrl+Num-` |
+| Channel | What goes here | Mute | Vol Down | Vol Up |
+|---------|---------------|------|----------|--------|
+| Desktop | Games, system sounds, everything else | `Ctrl+Num1` | `Ctrl+Num4` | `Ctrl+Num7` |
+| Discord | Discord voice/audio | `Ctrl+Num2` | `Ctrl+Num5` | `Ctrl+Num8` |
+| Music | YouTube Music, Spotify | `Ctrl+Num3` | `Ctrl+Num6` | `Ctrl+Num9` |
+| Browser | Chrome, Firefox, Brave, etc. | `Ctrl+NumDel` | `Ctrl+Num+` | `Ctrl+Num-` |
 
 ### OSD Overlay
 
@@ -40,14 +40,13 @@ The installer checks all requirements and installs any missing dependencies (`pa
 ## Install
 
 ```bash
-git clone https://github.com/CrazyGoGo42/my-audio-mixer-for-linux.git
+git clone https://github.com/YOUR_USER/audio-mixer-linux.git
 cd audio-mixer-linux
 chmod +x install.sh
 ./install.sh
 ```
 
 The installer will:
-
 1. Check your system (PipeWire, WirePlumber, Python, GTK)
 2. Install missing dependencies (`pavucontrol`, `xdotool`)
 3. Create 4 virtual audio sinks (Games, Discord, Music, Browser)
@@ -97,14 +96,14 @@ Removes everything the installer created (scripts, config, shortcuts, OSD daemon
 
 ## How It Works
 
-| Component               | What it does                                                               |
-| ----------------------- | -------------------------------------------------------------------------- |
-| `virtual-sinks.conf`    | PipeWire config that creates 4 virtual audio sinks on boot                 |
-| `audio-channel-control` | Bash script (~20ms per call) that adjusts volume/mute via `pactl`          |
-| `audio-osd`             | Persistent Python/GTK3 daemon that shows a volume overlay via named pipe   |
-| `audio-router-daemon`   | Background daemon that auto-routes known apps and prompts for unknown ones |
-| `audio-route-apps`      | Manual one-shot routing of all currently playing apps                      |
-| GNOME shortcuts         | 12 custom keybindings that call `audio-channel-control`                    |
+| Component | What it does |
+|-----------|-------------|
+| `virtual-sinks.conf` | PipeWire config that creates 4 virtual audio sinks on boot |
+| `audio-channel-control` | Bash script (~20ms per call) that adjusts volume/mute via `pactl` |
+| `audio-osd` | Persistent Python/GTK3 daemon that shows a volume overlay via named pipe |
+| `audio-router-daemon` | Background daemon that auto-routes known apps and prompts for unknown ones |
+| `audio-route-apps` | Manual one-shot routing of all currently playing apps |
+| GNOME shortcuts | 12 custom keybindings that call `audio-channel-control` |
 
 ### Architecture
 
@@ -145,7 +144,6 @@ Removes everything the installer created (scripts, config, shortcuts, OSD daemon
 ## Customization
 
 **Change volume step size** — edit `STEP` in `~/.local/bin/audio-channel-control`:
-
 ```bash
 STEP="1%"   # default — 1% per keypress
 STEP="5%"   # coarser control

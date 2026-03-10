@@ -10,6 +10,7 @@ Remembers choices in WirePlumber's restore-stream database.
 import subprocess, json, os, time, signal, sys, re
 
 VIRTUAL_SINKS = {"Games_Audio", "Discord_Audio", "Music_Audio", "Browser_Audio"}
+VIRTUAL_SINK_OUTPUTS = {"Games_Audio_out", "Discord_Audio_out", "Music_Audio_out", "Browser_Audio_out"}
 RESTORE_FILE = os.path.expanduser("~/.local/state/wireplumber/restore-stream")
 PID_FILE = "/tmp/audio-router-daemon.pid"
 
@@ -220,6 +221,56 @@ def persist_target(app_name, target_sink):
     open(RESTORE_FILE, "w").writelines(new_lines)
 
 
+def reroute_virtual_sinks_to_easyeffects():
+    """Move virtual sink outputs to easyeffects_sink if they're on hardware."""
+    try:
+        out = run(["pactl", "list", "sink-inputs"])
+    except Exception:
+        return
+
+    # Find easyeffects_sink index
+    try:
+        sinks_out = run(["pactl", "list", "sinks", "short"])
+    except Exception:
+        return
+    ee_sink_name = None
+    for line in sinks_out.split("\n"):
+        if "easyeffects_sink" in line:
+            ee_sink_name = "easyeffects_sink"
+            break
+    if not ee_sink_name:
+        return
+
+    current_idx = None
+    current_sink = None
+    current_node = None
+    moved = 0
+
+    for line in out.split("\n"):
+        line_s = line.strip()
+        if line_s.startswith("Sink Input #"):
+            current_idx = line_s.split("#")[1]
+            current_sink = None
+            current_node = None
+        elif line_s.startswith("Sink:") and current_idx:
+            current_sink = line_s.split(":")[1].strip()
+        elif "node.name" in line_s and "=" in line_s and current_idx:
+            current_node = line_s.split("=")[1].strip().strip('"')
+
+            if current_node in VIRTUAL_SINK_OUTPUTS and current_sink:
+                sink_name = get_sink_name_by_index(current_sink)
+                if sink_name and sink_name != "easyeffects_sink":
+                    r = subprocess.run(
+                        ["pactl", "move-sink-input", current_idx, "easyeffects_sink"],
+                        capture_output=True, text=True
+                    )
+                    if r.returncode == 0:
+                        moved += 1
+
+    if moved > 0:
+        notify(f"Routed {moved} virtual sinks through EasyEffects")
+
+
 def notify(msg):
     try:
         subprocess.Popen(["notify-send", "-t", "3000", "Audio Router", msg],
@@ -256,6 +307,12 @@ def main():
         handled.add(s["idx"])
 
     for line in proc.stdout:
+        # When EasyEffects sink appears, re-route virtual sink outputs through it
+        if "'new'" in line and "sink" in line and "sink-input" not in line:
+            time.sleep(1)
+            reroute_virtual_sinks_to_easyeffects()
+            continue
+
         if "'new'" not in line or "sink-input" not in line:
             continue
 
