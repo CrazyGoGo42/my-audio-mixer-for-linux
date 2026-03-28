@@ -1,25 +1,39 @@
 #!/usr/bin/env python3
 """
-Audio Router Daemon — watches for new audio streams on the default output
-and asks the user which virtual sink to route them to.
+Audio Router Daemon — watches for new audio streams and routes them to
+virtual sinks. Manages EasyEffects integration and auto-switches between
+audio hardware (speakers/headphones).
 
-Only triggers for streams NOT already on a virtual sink.
-Remembers choices in WirePlumber's restore-stream database.
+Audio chain: App → Virtual Sink → easyeffects_sink → EasyEffects → Hardware
 """
 
-import subprocess, json, os, time, signal, sys, re
+import subprocess, os, time, signal, sys, re, json
+
+DEBUG_LOG = "/tmp/audio-router-debug.log"
+
+def _dbg(msg):
+    try:
+        with open(DEBUG_LOG, "a") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
 
 VIRTUAL_SINKS = {"Games_Audio", "Discord_Audio", "Music_Audio", "Browser_Audio"}
 VIRTUAL_SINK_OUTPUTS = {"Games_Audio_out", "Discord_Audio_out", "Music_Audio_out", "Browser_Audio_out"}
-RESTORE_FILE = os.path.expanduser("~/.local/state/wireplumber/restore-stream")
 PID_FILE = "/tmp/audio-router-daemon.pid"
+VOLUME_STATE_FILE = "/tmp/audio-mixer-volumes"
+# Our own routing DB — maps app identity (binary/name) → virtual sink.
+# More reliable than WirePlumber's restore-stream, which doesn't honor our
+# externally-written target entries in version 0.4.x.
+ROUTING_DB_FILE = os.path.expanduser("~/.local/state/audio-router/routing.json")
 
 # Apps to silently ignore (internal/system streams)
 IGNORE_APPS = {"audio-osd", "speech-dispatcher-dummy", "paplay", "libcanberra",
                "GNOME Volume Control Media Keys", "gnome-shell", "Mutter",
-               "easyeffects", "gnome-pomodoro", "xdg-desktop-portal"}
+               "easyeffects", "gnome-pomodoro", "xdg-desktop-portal",
+               "gnome-control-center"}
 IGNORE_NODES = {"Games_Audio_out", "Discord_Audio_out", "Music_Audio_out",
-                "Browser_Audio_out", "Desktop_Audio_out"}
+                "Browser_Audio_out"}
 
 # Known routing rules — auto-route these without asking
 AUTO_ROUTE = {
@@ -36,6 +50,13 @@ AUTO_BROWSERS = {"chrome", "chromium", "chromium-browser", "google-chrome-stable
 
 # Track which sink-input indices we've already handled this session
 handled = set()
+# Track which app names we've already handled (prevents duplicate popups)
+handled_apps = set()
+# Our persistent routing DB, loaded at startup
+routing_db = {}
+# Map of sink-input idx → expected target sink for all streams we've routed
+# Used to detect and correct drift (WirePlumber resetting streams to hardware)
+routed_streams = {}
 
 
 def run(cmd):
@@ -60,7 +81,7 @@ def get_sink_name_by_index(idx):
 
 
 def get_new_streams():
-    """Find sink-inputs that are on default/easyeffects sink (not on a virtual sink)."""
+    """Find sink-inputs that are not yet on a virtual sink."""
     try:
         out = run(["pactl", "list", "sink-inputs"])
     except Exception:
@@ -108,6 +129,7 @@ def get_new_streams():
             sink_name = get_sink_name_by_index(sink_idx)
             if sink_name in VIRTUAL_SINKS:
                 handled.add(idx)
+                routed_streams[idx] = sink_name  # track so drift detection covers it
                 continue
 
         display = app_name or binary or node_name
@@ -126,18 +148,152 @@ def get_new_streams():
     return result
 
 
+def extract_alsa_inner(name):
+    """Extract inner app name from 'ALSA plug-in [xyz]' pattern."""
+    m = re.match(r"ALSA\s+plug-?in\s*\[(.+)\]", name, re.IGNORECASE)
+    return m.group(1).strip() if m else None
+
+
 def get_auto_target(stream):
     """Check if this stream matches an auto-route rule."""
     binary = stream["binary"].lower()
     app = stream["app"]
+    app_lower = app.lower()
 
+    # Check binary name
     if binary in AUTO_ROUTE:
         return AUTO_ROUTE[binary]
-    if app in AUTO_ROUTE:
-        return AUTO_ROUTE[app]
     if binary in AUTO_BROWSERS:
         return "Browser_Audio"
+
+    # Check app name (case-insensitive)
+    for key, target in AUTO_ROUTE.items():
+        if app_lower == key.lower():
+            return target
+
+    # Check inside "ALSA plug-in [xyz]" wrappers
+    inner = extract_alsa_inner(app)
+    if inner:
+        inner_lower = inner.lower()
+        for key, target in AUTO_ROUTE.items():
+            if inner_lower == key.lower():
+                return target
+        if inner_lower in AUTO_BROWSERS:
+            return "Browser_Audio"
+
     return None
+
+
+def load_routing_db():
+    """Load our persistent routing database from disk."""
+    global routing_db
+    try:
+        if os.path.isfile(ROUTING_DB_FILE):
+            with open(ROUTING_DB_FILE) as f:
+                routing_db = json.load(f)
+    except Exception:
+        routing_db = {}
+
+
+def save_routing_db():
+    """Persist the routing database to disk."""
+    try:
+        os.makedirs(os.path.dirname(ROUTING_DB_FILE), exist_ok=True)
+        with open(ROUTING_DB_FILE, "w") as f:
+            json.dump(routing_db, f, indent=2)
+    except Exception:
+        pass
+
+
+def get_db_target(stream):
+    """Look up this stream's app identity in our routing DB.
+
+    Checks all possible identity keys so a match is found even when the binary
+    field changes between streams of the same app.
+    """
+    for key in all_identities(stream):
+        target = routing_db.get(key)
+        if target and target in VIRTUAL_SINKS:
+            return target
+    return None
+
+
+def verify_routed_streams():
+    """Re-assert routes for any stream that has drifted off its virtual sink.
+
+    WirePlumber's linking policy re-evaluates the graph whenever a new app
+    connects (e.g. Discord starting), which can temporarily reset existing
+    streams back to the default hardware output.
+    """
+    if not routed_streams:
+        return
+    try:
+        out = run(["pactl", "list", "sink-inputs"])
+    except Exception:
+        return
+
+    current_idx = None
+    current_sink = None
+    live_idxs = set()
+
+    for line in out.split("\n"):
+        line_s = line.strip()
+        if line_s.startswith("Sink Input #"):
+            current_idx = line_s.split("#")[1]
+            current_sink = None
+            live_idxs.add(current_idx)
+        elif line_s.startswith("Sink:") and current_idx:
+            current_sink = line_s.split(":")[1].strip()
+            if current_idx in routed_streams:
+                expected = routed_streams[current_idx]
+                actual = get_sink_name_by_index(current_sink)
+                if actual and actual != expected:
+                    subprocess.run(
+                        ["pactl", "move-sink-input", current_idx, expected],
+                        capture_output=True, text=True
+                    )
+
+    # Prune stale entries for streams that no longer exist
+    for idx in list(routed_streams):
+        if idx not in live_idxs:
+            del routed_streams[idx]
+
+
+def all_identities(stream):
+    """Return ALL non-empty identity keys for this stream.
+
+    Different PipeWire/PulseAudio streams from the same app can surface with
+    different combinations of binary/app/node fields populated.  Checking only
+    one field causes missed deduplication and duplicate routing prompts.
+    """
+    ids = set()
+    binary = stream["binary"].strip().lower()
+    if binary:
+        ids.add(binary)
+    app = stream["app"].strip().lower()
+    inner = extract_alsa_inner(stream["app"])
+    if inner:
+        ids.add(inner.strip().lower())
+    elif app:
+        ids.add(app)
+    node = stream["node"].strip().lower()
+    if node:
+        ids.add(node)
+    return ids - {""}
+
+
+def app_identity(stream):
+    """Return the single best identity key (used as routing DB key)."""
+    binary = stream["binary"].strip().lower()
+    if binary:
+        return binary
+    inner = extract_alsa_inner(stream["app"])
+    if inner:
+        return inner.strip().lower()
+    app = stream["app"].strip().lower()
+    if app:
+        return app
+    return stream["node"].strip().lower()
 
 
 def ask_user(stream):
@@ -168,77 +324,178 @@ def ask_user(stream):
         return None
 
 
-def route_stream(stream, target_sink):
-    """Move the stream to the target sink and persist in WirePlumber."""
+def get_pw_node_name(stream):
+    """Get the PipeWire node name for pw-link operations."""
+    # pw-link uses the node.name from PipeWire, which matches application.name
+    # for most apps, or the node.name property
+    return stream.get("app") or stream.get("node") or stream.get("display")
+
+
+def route_stream_pwlink(node_name, target_sink):
+    """Use pw-link to disconnect a stream from its current sink and connect to target."""
     try:
-        r = subprocess.run(
-            ["pactl", "move-sink-input", stream["idx"], target_sink],
-            capture_output=True, text=True
-        )
-        if r.returncode == 0:
-            persist_target(stream["app"] or stream["display"], target_sink)
+        # Get current links for this node
+        out = run(["pw-link", "-o"])  # list output ports
+        # Disconnect existing links from this node's outputs
+        for ch in ["FL", "FR"]:
+            src_port = f"{node_name}:output_{ch}"
+            # Find and disconnect any existing link from this port
+            links = run(["pw-link", "-l"])
+            in_src = False
+            for line in links.split("\n"):
+                stripped = line.strip()
+                if stripped == src_port:
+                    in_src = True
+                elif in_src and stripped.startswith("|-> "):
+                    dest_port = stripped[4:]
+                    subprocess.run(["pw-link", "-d", src_port, dest_port],
+                                   capture_output=True, text=True, timeout=5)
+                elif in_src and not stripped.startswith("|"):
+                    in_src = False
+
+            # Connect to target
+            subprocess.run(["pw-link", src_port, f"{target_sink}:playback_{ch}"],
+                           capture_output=True, text=True, timeout=5)
+        return True
+    except Exception:
+        return False
+
+
+def route_stream(stream, target_sink, silent=False):
+    """Move the stream to the target sink. Uses pw-link for reliable routing
+    since WirePlumber's restore-stream can override pactl move-sink-input."""
+    node_name = get_pw_node_name(stream)
+    if not node_name:
+        return False
+
+    try:
+        # Save all identity keys so future lookups hit regardless of which
+        # fields are populated in the next stream from this app
+        for key in all_identities(stream):
+            routing_db[key] = target_sink
+        save_routing_db()
+
+        # Track this stream so we can detect drift and re-assert its route
+        routed_streams[stream["idx"]] = target_sink
+
+        # Use pw-link for reliable routing
+        route_stream_pwlink(node_name, target_sink)
+
+        # Also try pactl as backup
+        subprocess.run(["pactl", "move-sink-input", stream["idx"], target_sink],
+                       capture_output=True, text=True)
+
+        if not silent:
             notify(f"Routed {stream['display']} → {target_sink.replace('_Audio', '')}")
-            return True
+        return True
     except Exception:
         pass
     return False
 
 
-def persist_target(app_name, target_sink):
-    """Write routing target into WirePlumber's restore-stream database."""
-    if not os.path.isfile(RESTORE_FILE):
+# ---------------------------------------------------------------------------
+# Hardware & EasyEffects management
+# ---------------------------------------------------------------------------
+
+def get_hardware_sinks():
+    """Return list of hardware ALSA sink names (non-HDMI, non-virtual)."""
+    try:
+        out = run(["pactl", "list", "sinks", "short"])
+    except Exception:
+        return []
+    sinks = []
+    for line in out.split("\n"):
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].startswith("alsa_output") and "hdmi" not in parts[1].lower():
+            sinks.append(parts[1])
+    return sinks
+
+
+def get_preferred_hardware():
+    """Pick the best hardware sink: prefer USB (Blue Mic headset) over built-in."""
+    sinks = get_hardware_sinks()
+    if not sinks:
+        return None
+    # Prefer USB devices (headset) when connected
+    for s in sinks:
+        if ".usb-" in s:
+            return s
+    return sinks[0]
+
+
+def has_easyeffects():
+    """Check if easyeffects_sink is available."""
+    try:
+        out = run(["pactl", "list", "sinks", "short"])
+        return "easyeffects_sink" in out
+    except Exception:
+        return False
+
+
+def wire_easyeffects_output(hw_sink):
+    """Use pw-link to connect EasyEffects output to the given hardware sink.
+
+    Disconnects from any other sink first, then connects to hw_sink.
+    Handles both stereo (FL/FR) and surround (FL/FR/RL/RR) sinks.
+    """
+    if not hw_sink:
         return
-    escaped = app_name.replace("\\", "\\\\").replace(" ", "\\s").replace("[", "\\o").replace("]", "\\c")
-    key = f"Output/Audio:application.name:{escaped}"
-    target_line = f"{key}:target={target_sink}\n"
+    try:
+        links_out = subprocess.run(["pw-link", "-l"], capture_output=True, text=True, timeout=5)
+        if "ee_soe_output_level" not in links_out.stdout:
+            return
 
-    lines = open(RESTORE_FILE).readlines()
-    target_key = f"{key}:target="
-    found = False
-    new_lines = []
-    for line in lines:
-        if line.startswith(target_key):
-            new_lines.append(target_line)
-            found = True
-        else:
-            new_lines.append(line)
-    if not found:
-        volume_key = f"{key}:volume="
-        inserted = False
-        final = []
-        for line in new_lines:
-            final.append(line)
-            if not inserted and line.startswith(volume_key):
-                final.append(target_line)
-                inserted = True
-        if not inserted:
-            final.append(f"{key}:channelMap=FL;FR;\n")
-            final.append(f"{key}:channelVolumes=1.0;1.0;\n")
-            final.append(f"{key}:mute=false\n")
-            final.append(target_line)
-            final.append(f"{key}:volume=1.0\n")
-        new_lines = final
-    open(RESTORE_FILE, "w").writelines(new_lines)
+        # Find what ee_soe_output_level is currently connected to
+        lines = links_out.stdout.split("\n")
+        current_targets = set()
+        in_ee_output = False
+        for line in lines:
+            if "ee_soe_output_level:output_F" in line and "|-> " not in line:
+                in_ee_output = True
+            elif in_ee_output and "|-> " in line:
+                target = line.strip().split("|-> ")[1]
+                current_targets.add(target)
+                in_ee_output = False
+            else:
+                in_ee_output = False
+
+        # Check if already connected to the right sink
+        if current_targets and all(hw_sink in t for t in current_targets):
+            return
+
+        # Disconnect from all current targets
+        for target in current_targets:
+            port = "output_FL" if "FL" in target else "output_FR"
+            subprocess.run(["pw-link", "-d", f"ee_soe_output_level:{port}", target],
+                           capture_output=True, text=True, timeout=5)
+
+        # Connect to new hardware sink
+        subprocess.run(["pw-link", "ee_soe_output_level:output_FL", f"{hw_sink}:playback_FL"],
+                       capture_output=True, text=True, timeout=5)
+        subprocess.run(["pw-link", "ee_soe_output_level:output_FR", f"{hw_sink}:playback_FR"],
+                       capture_output=True, text=True, timeout=5)
+
+    except Exception:
+        pass
 
 
-def reroute_virtual_sinks_to_easyeffects():
-    """Move virtual sink outputs to easyeffects_sink if they're on hardware."""
+def reroute_virtual_sink_outputs():
+    """Move virtual sink outputs to easyeffects_sink (or hardware fallback).
+
+    All audio should flow: Virtual Sink → easyeffects_sink → EasyEffects → Hardware
+    """
+    target = "easyeffects_sink" if has_easyeffects() else get_preferred_hardware()
+    if not target:
+        return
+
+    # Also fix EasyEffects output to the correct hardware
+    hw = get_preferred_hardware()
+    if hw and has_easyeffects():
+        wire_easyeffects_output(hw)
+
     try:
         out = run(["pactl", "list", "sink-inputs"])
     except Exception:
-        return
-
-    # Find easyeffects_sink index
-    try:
-        sinks_out = run(["pactl", "list", "sinks", "short"])
-    except Exception:
-        return
-    ee_sink_name = None
-    for line in sinks_out.split("\n"):
-        if "easyeffects_sink" in line:
-            ee_sink_name = "easyeffects_sink"
-            break
-    if not ee_sink_name:
         return
 
     current_idx = None
@@ -259,16 +516,97 @@ def reroute_virtual_sinks_to_easyeffects():
 
             if current_node in VIRTUAL_SINK_OUTPUTS and current_sink:
                 sink_name = get_sink_name_by_index(current_sink)
-                if sink_name and sink_name != "easyeffects_sink":
+                if sink_name and sink_name != target:
                     r = subprocess.run(
-                        ["pactl", "move-sink-input", current_idx, "easyeffects_sink"],
+                        ["pactl", "move-sink-input", current_idx, target],
                         capture_output=True, text=True
                     )
                     if r.returncode == 0:
                         moved += 1
 
     if moved > 0:
-        notify(f"Routed {moved} virtual sinks through EasyEffects")
+        notify(f"Routed {moved} channel outputs → EasyEffects")
+
+
+def handle_sink_change():
+    """Called when a sink appears or disappears. Manages hardware switching."""
+    hw = get_preferred_hardware()
+    if not hw:
+        return
+
+    # Wire EasyEffects to the preferred hardware
+    if has_easyeffects():
+        wire_easyeffects_output(hw)
+        reroute_virtual_sink_outputs()
+    else:
+        reroute_virtual_sink_outputs()
+
+    notify(f"Audio output → {hw.split('.')[-1].replace('-', ' ').title()}")
+
+
+# ---------------------------------------------------------------------------
+# Independent channel volumes
+# ---------------------------------------------------------------------------
+#
+# Intended volumes (0-100%) are stored in VOLUME_STATE_FILE by audio-channel-control.
+# The daemon sets virtual sink volumes directly to the intended value.
+# Hardware (and easyeffects_sink) are kept at 100% so they don't attenuate channels.
+# This makes each channel fully independent — the Ubuntu slider won't affect them.
+
+
+def get_sink_volume_pct(sink_name):
+    """Get sink volume as integer percentage."""
+    try:
+        out = run(["pactl", "get-sink-volume", sink_name])
+        m = re.search(r'(\d+)%', out)
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+def read_intended_volumes():
+    """Read intended volumes from state file."""
+    intended = {}
+    try:
+        for line in open(VOLUME_STATE_FILE):
+            line = line.strip()
+            if "=" in line:
+                k, v = line.split("=", 1)
+                if k in VIRTUAL_SINKS:
+                    intended[k] = int(v)
+    except Exception:
+        pass
+    return intended
+
+
+def init_volume_state():
+    """Initialize state file with current virtual sink volumes on first run."""
+    if os.path.isfile(VOLUME_STATE_FILE):
+        return
+    lines = []
+    for sink in sorted(VIRTUAL_SINKS):
+        vol = get_sink_volume_pct(sink)
+        if vol is None:
+            vol = 100
+        lines.append(f"{sink}={vol}\n")
+    try:
+        with open(VOLUME_STATE_FILE, "w") as f:
+            f.writelines(lines)
+    except Exception:
+        pass
+
+
+def apply_channel_volumes():
+    """Set each virtual sink volume to its intended value from the state file."""
+    intended = read_intended_volumes()
+    for sink in VIRTUAL_SINKS:
+        target = intended.get(sink, 100)
+        try:
+            run(["pactl", "set-sink-volume", sink, f"{target}%"])
+        except Exception:
+            pass
+
+
 
 
 def notify(msg):
@@ -287,10 +625,22 @@ def cleanup(signum=None, frame=None):
     sys.exit(0)
 
 
+_compensation_requested = False
+
+
+def handle_sigusr1(signum, frame):
+    """SIGUSR1 handler — sets flag for main loop to apply compensation."""
+    global _compensation_requested
+    _compensation_requested = True
+
+
 def main():
+    global _compensation_requested
+
     # Write PID file
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGUSR1, handle_sigusr1)
     with open(PID_FILE, "w") as f:
         f.write(str(os.getpid()))
 
@@ -300,38 +650,123 @@ def main():
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
     )
 
-    # Small delay on startup to skip existing streams
-    time.sleep(2)
-    # Mark all current streams as handled
-    for s in get_new_streams():
-        handled.add(s["idx"])
+    # Load our persistent routing DB before processing any streams
+    load_routing_db()
 
-    for line in proc.stdout:
-        # When EasyEffects sink appears, re-route virtual sink outputs through it
-        if "'new'" in line and "sink" in line and "sink-input" not in line:
+    # Small delay on startup to let PipeWire settle
+    time.sleep(2)
+
+    # Route virtual sink outputs through EasyEffects and fix hardware wiring
+    reroute_virtual_sink_outputs()
+
+    # Initialize volume state file and apply channel volumes
+    init_volume_state()
+    apply_channel_volumes()
+
+    # Route any existing streams that aren't on a virtual sink yet
+    for stream in get_new_streams():
+        handled.add(stream["idx"])
+        ids = all_identities(stream)
+
+        auto_target = get_auto_target(stream)
+        if auto_target:
+            route_stream(stream, auto_target, silent=True)
+            handled_apps.update(ids)
+            continue
+
+        db_target = get_db_target(stream)
+        if db_target:
+            route_stream(stream, db_target, silent=True)
+            handled_apps.update(ids)
+            continue
+
+        handled_apps.update(ids)
+
+    # Streams that need the user prompt — deferred so startup is fast
+    deferred = []
+
+    while True:
+        try:
+            line = proc.stdout.readline()
+        except (IOError, OSError):
+            # SIGUSR1 interrupts readline — check flag and continue
+            if _compensation_requested:
+                _compensation_requested = False
+                apply_channel_volumes()
+            continue
+
+        if not line:
+            break  # process ended
+
+        # Check if volume update was requested via signal
+        if _compensation_requested:
+            _compensation_requested = False
+            apply_channel_volumes()
+
+        # Sink appeared or disappeared — handle hardware switching
+        if ("'new'" in line or "'remove'" in line) and "sink" in line and "sink-input" not in line:
             time.sleep(1)
-            reroute_virtual_sinks_to_easyeffects()
+            handle_sink_change()
+            # WirePlumber may have reset existing streams during the graph change
+            verify_routed_streams()
             continue
 
         if "'new'" not in line or "sink-input" not in line:
             continue
 
-        # Small delay to let the stream fully register
-        time.sleep(0.5)
+        # Short delay: enough for the stream to register in pactl, but
+        # short enough that known apps are routed before audible output
+        # reaches hardware. Unknown apps get a second chance after a longer
+        # settle window (handled via deferred list below).
+        time.sleep(0.15)
 
         for stream in get_new_streams():
             handled.add(stream["idx"])
 
-            # Check auto-route rules first
+            ids = all_identities(stream)
+            _dbg(f"NEW idx={stream['idx']} binary={stream['binary']!r} app={stream['app']!r} node={stream['node']!r} ids={ids}")
+
+            # Auto-route rules (browsers, Discord, etc.) — highest priority
             auto_target = get_auto_target(stream)
             if auto_target:
-                route_stream(stream, auto_target)
+                route_stream(stream, auto_target, silent=True)
+                handled_apps.update(ids)
                 continue
 
-            # Ask the user
-            target = ask_user(stream)
-            if target:
-                route_stream(stream, target)
+            # Our own routing DB — remembers past user choices across restarts
+            db_target = get_db_target(stream)
+            if db_target:
+                route_stream(stream, db_target, silent=True)
+                handled_apps.update(ids)
+                continue
+
+            # Skip if we already asked about this app in this session.
+            # Check ALL identities so that streams with different binary/app
+            # field combinations from the same app are still deduplicated.
+            if ids & handled_apps:
+                _dbg(f"  SKIP (already handled): overlap={ids & handled_apps}")
+                continue
+            handled_apps.update(ids)
+
+            _dbg(f"  DEFERRING for user prompt, handled_apps now={handled_apps}")
+            # Unknown app — defer the dialog so we don't block the event loop
+            deferred.append(stream)
+
+        # After routing any new stream, check that existing streams haven't drifted.
+        # WirePlumber re-evaluates all links when the graph changes.
+        verify_routed_streams()
+
+        # Process any deferred user-prompt streams (non-blocking check)
+        if deferred:
+            # Give the stream a bit more time to settle before showing dialog
+            time.sleep(0.35)
+            still_deferred = []
+            for stream in deferred:
+                target = ask_user(stream)
+                if target:
+                    route_stream(stream, target)
+                # streams with no user choice are just forgotten
+            deferred = still_deferred
 
     cleanup()
 

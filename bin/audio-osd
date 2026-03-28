@@ -173,7 +173,7 @@ class OSDWindow(Gtk.Window):
 
     def show_osd(self, label_text, value):
         muted = value == "muted"
-        percent = 0 if muted else min(int(value), 150)
+        percent = 0 if muted else min(int(value.rstrip('%')), 150)
 
         if muted:
             mute_color = self.theme[4]

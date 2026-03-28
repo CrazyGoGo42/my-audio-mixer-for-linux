@@ -8,6 +8,8 @@ set -e
 # What this does:
 #   - Creates 4 virtual audio sinks (Games, Discord, Music, Browser)
 #   - Your default output stays unchanged — system sounds just work
+#   - Auto-switches between speakers and headphones when plugged/unplugged
+#   - Routes all channel audio through EasyEffects for EQ processing
 #   - Sets up Ctrl+Numpad hotkeys for per-channel mute/volume control
 #   - Installs an OSD overlay that shows volume % when you press hotkeys
 #   - Optionally routes running apps to their channels
@@ -216,6 +218,7 @@ context.modules = [
             }
         }
     }
+
 ]
 SINKEOF
 
@@ -236,26 +239,14 @@ else
 fi
 
 # Configure EasyEffects to work with virtual sinks (if installed)
-if command -v easyeffects &>/dev/null || gsettings list-schemas 2>/dev/null | grep -q "com.github.wwmm.easyeffects"; then
+if command -v easyeffects &>/dev/null || flatpak list 2>/dev/null | grep -qi easyeffects; then
     info "Configuring EasyEffects compatibility..."
-
-    # Detect hardware sink for EasyEffects output (first non-virtual, non-HDMI sink)
-    HW_SINK_NAME=$(pactl list sinks short 2>/dev/null | grep -v -E "easyeffects|Games_Audio|Discord_Audio|Music_Audio|Browser_Audio|hdmi" | grep "alsa_output" | awk '{print $2}' | head -1)
-
-    # Let EasyEffects follow the default output device (safe since virtual sinks are not default)
-    gsettings set com.github.wwmm.easyeffects.streamoutputs use-default-output-device true
-
-    # Disable process-all-outputs so EasyEffects doesn't grab apps directly
-    gsettings set com.github.wwmm.easyeffects process-all-outputs false
-
-    # Blocklist routed apps so EasyEffects doesn't override virtual sink routing
-    # Virtual sink outputs still go through EasyEffects for audio processing
-    gsettings set com.github.wwmm.easyeffects.streamoutputs blocklist \
-        "['ALSA plug-in [plexamp]', 'java', 'WEBRTC VoiceEngine', 'Chromium', 'Google Chrome', 'Firefox', 'LibreWolf', 'Brave']"
-
-    ok "EasyEffects configured"
+    info "The audio-router-daemon manages EasyEffects output automatically"
+    info "It will route all channel audio through EasyEffects and auto-switch"
+    info "between speakers and headphones via pw-link."
+    ok "EasyEffects detected — daemon will manage routing"
 else
-    info "EasyEffects not detected — skipping"
+    info "EasyEffects not detected — channels will route directly to hardware"
 fi
 
 # ---------- OSD autostart ----------
@@ -308,6 +299,8 @@ if [ -z "$SKIP_KEYBINDINGS" ]; then
 
     EXISTING=$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null)
 
+    # NumLock ON key names (KP_1..KP_9) + NumLock OFF equivalents (KP_End, KP_Down, etc.)
+    # Both sets are needed because X11 sends different keysyms depending on NumLock state.
     BINDINGS=(
         "CH1 Mute (Games)|${SCRIPT} games mute|<Ctrl>KP_1"
         "CH2 Mute (Discord)|${SCRIPT} discord mute|<Ctrl>KP_2"
@@ -321,6 +314,15 @@ if [ -z "$SKIP_KEYBINDINGS" ]; then
         "CH4 Mute (Browser)|${SCRIPT} browser mute|<Ctrl>KP_Delete"
         "CH4 Vol Down (Browser)|${SCRIPT} browser down|<Ctrl>KP_Add"
         "CH4 Vol Up (Browser)|${SCRIPT} browser up|<Ctrl>KP_Subtract"
+        "CH1 Mute (Games) NL|${SCRIPT} games mute|<Ctrl>KP_End"
+        "CH2 Mute (Discord) NL|${SCRIPT} discord mute|<Ctrl>KP_Down"
+        "CH3 Mute (Music) NL|${SCRIPT} music mute|<Ctrl>KP_Next"
+        "CH1 Vol Down (Games) NL|${SCRIPT} games down|<Ctrl>KP_Left"
+        "CH2 Vol Down (Discord) NL|${SCRIPT} discord down|<Ctrl>KP_Begin"
+        "CH3 Vol Down (Music) NL|${SCRIPT} music down|<Ctrl>KP_Right"
+        "CH1 Vol Up (Games) NL|${SCRIPT} games up|<Ctrl>KP_Home"
+        "CH2 Vol Up (Discord) NL|${SCRIPT} discord up|<Ctrl>KP_Up"
+        "CH3 Vol Up (Music) NL|${SCRIPT} music up|<Ctrl>KP_Prior"
     )
 
     PATHS=""
@@ -331,7 +333,7 @@ if [ -z "$SKIP_KEYBINDINGS" ]; then
     done
 
     if [ "$EXISTING" != "@as []" ]; then
-        CLEANED=$(echo "$EXISTING" | sed "s|@as \[||;s|\]||;s|'${GPATH}/custom10[0-9]/'[, ]*||g;s|'${GPATH}/custom11[0-1]/'[, ]*||g;s|, *$||")
+        CLEANED=$(echo "$EXISTING" | sed "s|@as \[||;s|\]||;s|'${GPATH}/custom1[0-2][0-9]/'[, ]*||g;s|, *$||")
         if [ -n "$CLEANED" ] && [ "$CLEANED" != " " ]; then
             PATHS="${CLEANED}, ${PATHS}"
         fi
@@ -347,7 +349,7 @@ if [ -z "$SKIP_KEYBINDINGS" ]; then
         gsettings set "${GSCHEMA}:${GPATH}/custom${NUM}/" binding "$BINDING"
     done
 
-    ok "12 keyboard shortcuts configured"
+    ok "21 keyboard shortcuts configured (NumLock ON + OFF variants)"
 
     echo ""
     echo "  ┌────────────┬───────────────┬───────────────┬───────────────┐"
