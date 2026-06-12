@@ -1,0 +1,36 @@
+{
+  "_comment": "App → channel routing. Edit this or let the popup add entries for you. 'binary' matches application.process.binary, 'app' matches application.name. Run 'audio-routes-apply' after editing by hand. Anything not listed here goes to Default_Audio.",
+  "binary": {
+    "Discord": "Discord_Audio",
+    "discord": "Discord_Audio",
+    "spotify": "Music_Audio",
+    "youtube-music": "Music_Audio",
+    "youtubemusic": "Music_Audio",
+    "plexamp": "Music_Audio",
+    "chrome": "Browser_Audio",
+    "chromium": "Browser_Audio",
+    "chromium-browser": "Browser_Audio",
+    "google-chrome-stable": "Browser_Audio",
+    "firefox": "Browser_Audio",
+    "firefox-esr": "Browser_Audio",
+    "librewolf": "Browser_Audio",
+    "brave": "Browser_Audio",
+    "brave-browser": "Browser_Audio",
+    "vivaldi": "Browser_Audio",
+    "vivaldi-stable": "Browser_Audio",
+    "opera": "Browser_Audio",
+    "msedge": "Browser_Audio",
+    "whatsie": "Browser_Audio"
+  },
+  "app": {
+    "WEBRTC VoiceEngine": "Discord_Audio",
+    "Spotify": "Music_Audio",
+    "YouTube Music": "Music_Audio",
+    "Plexamp": "Music_Audio",
+    "Google Chrome": "Browser_Audio",
+    "Chromium": "Browser_Audio",
+    "Firefox": "Browser_Audio",
+    "LibreWolf": "Browser_Audio",
+    "Brave": "Browser_Audio"
+  }
+}

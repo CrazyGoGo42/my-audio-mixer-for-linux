@@ -1,10 +1,13 @@
 #!/bin/bash
-# Audio channel control — mute / volume up / volume down per virtual sink
+# Audio channel control — mute / volume up / volume down per virtual sink.
 # Usage: audio-channel-control <channel> <action>
+#   channel: games | discord | music | browser | default
+#   action:  mute | up | down
 #
-# Volumes are stored as "intended" percentages in a state file.
-# The audio-router-daemon applies compensation so that channel volumes
-# are independent of the hardware output level.
+# Volume is applied directly to the virtual sink. Because every app plays
+# through one of these sinks, each channel's level is fully independent of the
+# others and of the hardware slider. The intended % is cached in a state file
+# so it survives the sink suspending/resuming.
 
 STEP=1
 FIFO="/tmp/audio-osd.fifo"
@@ -15,53 +18,47 @@ case "$1" in
     discord) SINK="Discord_Audio"; L="Discord" ;;
     music)   SINK="Music_Audio";   L="Music"   ;;
     browser) SINK="Browser_Audio"; L="Browser" ;;
+    default) SINK="Default_Audio"; L="Default" ;;
     *) exit 1 ;;
 esac
 
-[ -z "$SINK" ] && exit 1
-
-# Auto-start OSD daemon if needed
+# Auto-start OSD daemon if its pipe is missing.
 [ ! -p "$FIFO" ] && { nohup "$HOME/.local/bin/audio-osd" >/dev/null 2>&1 & sleep 0.3; }
 
-# Read current intended volume from state file (default 100)
+# Current intended volume (default 100).
 VOL=$(grep "^${SINK}=" "$STATE" 2>/dev/null | tail -1 | cut -d= -f2)
 [ -z "$VOL" ] && VOL=100
+
+write_state() {
+    if grep -q "^${SINK}=" "$STATE" 2>/dev/null; then
+        sed -i "s/^${SINK}=.*/${SINK}=${VOL}/" "$STATE"
+    else
+        echo "${SINK}=${VOL}" >> "$STATE"
+    fi
+}
 
 case "$2" in
     mute)
         pactl set-sink-mute "$SINK" toggle
-        INFO=$(pactl get-sink-mute "$SINK")
-        case "$INFO" in *yes*) echo "$L muted" > "$FIFO" & ;; *)
-            echo "$L ${VOL}%" > "$FIFO" & ;;
-        esac ;;
+        if pactl get-sink-mute "$SINK" | grep -q yes; then
+            echo "$L muted" > "$FIFO" &
+        else
+            echo "$L ${VOL}%" > "$FIFO" &
+        fi
+        ;;
     down)
         pactl set-sink-mute "$SINK" 0
-        VOL=$((VOL - STEP))
-        [ "$VOL" -lt 0 ] && VOL=0
-        # Update state file
-        if grep -q "^${SINK}=" "$STATE" 2>/dev/null; then
-            sed -i "s/^${SINK}=.*/${SINK}=${VOL}/" "$STATE"
-        else
-            echo "${SINK}=${VOL}" >> "$STATE"
-        fi
-        # Apply volume directly and show OSD
+        VOL=$((VOL - STEP)); [ "$VOL" -lt 0 ] && VOL=0
+        write_state
         pactl set-sink-volume "$SINK" "${VOL}%" 2>/dev/null
         echo "$L ${VOL}%" > "$FIFO" &
-        kill -USR1 "$(cat /tmp/audio-router-daemon.pid 2>/dev/null)" 2>/dev/null
-        true ;;
+        ;;
     up)
         pactl set-sink-mute "$SINK" 0
-        VOL=$((VOL + STEP))
-        [ "$VOL" -gt 100 ] && VOL=100
-        # Update state file
-        if grep -q "^${SINK}=" "$STATE" 2>/dev/null; then
-            sed -i "s/^${SINK}=.*/${SINK}=${VOL}/" "$STATE"
-        else
-            echo "${SINK}=${VOL}" >> "$STATE"
-        fi
-        # Apply volume directly and show OSD
+        VOL=$((VOL + STEP)); [ "$VOL" -gt 100 ] && VOL=100
+        write_state
         pactl set-sink-volume "$SINK" "${VOL}%" 2>/dev/null
         echo "$L ${VOL}%" > "$FIFO" &
-        kill -USR1 "$(cat /tmp/audio-router-daemon.pid 2>/dev/null)" 2>/dev/null
-        true ;;
+        ;;
 esac
+true
