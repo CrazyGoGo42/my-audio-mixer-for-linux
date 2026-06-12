@@ -2,39 +2,36 @@
 set -e
 
 # ============================================================================
-# Audio Mixer for Linux — VoiceMeeter-like virtual audio channels for Ubuntu
+# Audio Mixer for Linux — VoiceMeeter-style virtual audio channels for Ubuntu
 # ============================================================================
 #
-# What this does:
-#   - Creates 4 virtual audio sinks (Games, Discord, Music, Browser)
-#   - Your default output stays unchanged — system sounds just work
-#   - Auto-switches between speakers and headphones when plugged/unplugged
-#   - Routes all channel audio through EasyEffects for EQ processing
-#   - Sets up Ctrl+Numpad hotkeys for per-channel mute/volume control
-#   - Installs an OSD overlay that shows volume % when you press hotkeys
-#   - Optionally routes running apps to their channels
+# Five independent channels (Games, Discord, Music, Browser, Default), each a
+# PipeWire virtual sink with its own volume. Apps are routed to the right
+# channel *declaratively* by pipewire-pulse — every stream is born on the
+# correct sink, so nothing ever escapes to the hardware at full volume and a
+# stopped/restarted player always comes back on its channel.
 #
-# Channels & Keybindings:
-#   CH1 Games    — Ctrl+Num1 (mute) | Ctrl+Num4 (vol-) | Ctrl+Num7 (vol+)
-#   CH2 Discord  — Ctrl+Num2 (mute) | Ctrl+Num5 (vol-) | Ctrl+Num8 (vol+)
-#   CH3 Music    — Ctrl+Num3 (mute) | Ctrl+Num6 (vol-) | Ctrl+Num9 (vol+)
-#   CH4 Browser  — Ctrl+NumDel (mute) | Ctrl+Num+ (vol-) | Ctrl+Num- (vol+)
+#   App → channel sink (volume) → EasyEffects → hardware
 #
-# Requirements: Ubuntu 22.04+ with PipeWire (default since 22.10)
+# Channels & keybindings (Ctrl + numpad):
+#   Games    Ctrl+Num1 mute  | Ctrl+Num4 down  | Ctrl+Num7 up
+#   Discord  Ctrl+Num2 mute  | Ctrl+Num5 down  | Ctrl+Num8 up
+#   Music    Ctrl+Num3 mute  | Ctrl+Num6 down  | Ctrl+Num9 up
+#   Browser  Ctrl+NumDel mute| Ctrl+Num+ down  | Ctrl+Num- up
+#   Default  Ctrl+Num0 mute  | Ctrl+Num/ down  | Ctrl+Num* up
+#
+# Requirements: Ubuntu 22.04+ with PipeWire (default since 22.10).
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
 PIPEWIRE_CONF_DIR="$HOME/.config/pipewire/pipewire.conf.d"
+PULSE_CONF_DIR="$HOME/.config/pipewire/pipewire-pulse.conf.d"
+MIXER_DIR="$HOME/.config/audio-mixer"
+SYSTEMD_DIR="$HOME/.config/systemd/user"
 AUTOSTART_DIR="$HOME/.config/autostart"
 
-# Colors
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
 info()  { echo -e "${BLUE}[INFO]${NC}  $1"; }
 ok()    { echo -e "${GREEN}[OK]${NC}    $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
@@ -47,260 +44,168 @@ echo "============================================"
 echo ""
 
 # ---------- Pre-flight checks ----------
-
 info "Checking system requirements..."
 
-# Check Ubuntu / Debian-based
-if ! command -v apt &>/dev/null; then
-    fail "This installer requires apt (Ubuntu/Debian). Exiting."
-    exit 1
-fi
-
-# Check PipeWire
-if ! command -v pipewire &>/dev/null; then
-    fail "PipeWire is not installed."
-    echo "  Install it with: sudo apt install pipewire pipewire-pulse wireplumber"
-    exit 1
-fi
+command -v apt &>/dev/null || { fail "Requires apt (Ubuntu/Debian)."; exit 1; }
+command -v pipewire &>/dev/null || { fail "PipeWire not installed: sudo apt install pipewire pipewire-pulse wireplumber"; exit 1; }
 ok "PipeWire $(pipewire --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)"
-
-# Check WirePlumber
-if ! command -v wireplumber &>/dev/null; then
-    fail "WirePlumber is not installed."
-    echo "  Install it with: sudo apt install wireplumber"
-    exit 1
-fi
+command -v wireplumber &>/dev/null || { fail "WirePlumber not installed: sudo apt install wireplumber"; exit 1; }
 ok "WirePlumber $(wireplumber --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)"
-
-# Check pactl
-if ! command -v pactl &>/dev/null; then
-    warn "pactl not found. Installing pipewire-pulse..."
-    sudo apt install -y pipewire-pulse
-fi
+command -v pactl &>/dev/null || { warn "Installing pipewire-pulse..."; sudo apt install -y pipewire-pulse; }
 ok "pactl available"
 
-# Check GNOME (for keybindings)
 if [ "$XDG_CURRENT_DESKTOP" != "ubuntu:GNOME" ] && [ "$XDG_CURRENT_DESKTOP" != "GNOME" ]; then
-    warn "Desktop is '$XDG_CURRENT_DESKTOP' — keybindings are GNOME-only."
-    warn "Virtual sinks and OSD will still work, but you'll need to bind keys manually."
+    warn "Desktop is '$XDG_CURRENT_DESKTOP' — keybindings are GNOME-only; sinks and routing still work."
     SKIP_KEYBINDINGS=1
 fi
-
-# Check Python3 + GTK3 for OSD
-if ! python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null; then
-    warn "Python3 GTK3 bindings not found. Installing..."
-    sudo apt install -y python3-gi gir1.2-gtk-3.0
-fi
+python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null || { warn "Installing GTK3..."; sudo apt install -y python3-gi gir1.2-gtk-3.0; }
 ok "Python3 + GTK3"
 
+# ---------- Dependencies ----------
+DEPS=""
+command -v zenity &>/dev/null    || DEPS="$DEPS zenity"
+command -v pavucontrol &>/dev/null || DEPS="$DEPS pavucontrol"
+command -v xrandr &>/dev/null    || DEPS="$DEPS x11-xserver-utils"
+if [ -n "$DEPS" ]; then info "Installing:$DEPS"; sudo apt install -y $DEPS; ok "Dependencies installed"; else ok "All dependencies present"; fi
 echo ""
 
-# ---------- Install dependencies ----------
-
-info "Checking optional dependencies..."
-
-DEPS_TO_INSTALL=""
-command -v pavucontrol &>/dev/null || DEPS_TO_INSTALL="$DEPS_TO_INSTALL pavucontrol"
-command -v xdotool &>/dev/null || DEPS_TO_INSTALL="$DEPS_TO_INSTALL xdotool"
-
-if [ -n "$DEPS_TO_INSTALL" ]; then
-    info "Installing:$DEPS_TO_INSTALL"
-    sudo apt install -y $DEPS_TO_INSTALL
-    ok "Dependencies installed"
-else
-    ok "All dependencies present"
-fi
-
-echo ""
+# ---------- Remove stale autostart from older installs ----------
+# Older versions started the daemons from BOTH systemd AND XDG autostart, which
+# launched two routers that fought each other. We standardise on systemd only.
+rm -f "$AUTOSTART_DIR/audio-osd.desktop" "$AUTOSTART_DIR/audio-router-daemon.desktop" 2>/dev/null
+rm -f "$HOME/.config/wireplumber/main.lua.d/90-audio-mixer-routing.lua" 2>/dev/null
 
 # ---------- Install scripts ----------
-
 info "Installing scripts to $BIN_DIR..."
-
 mkdir -p "$BIN_DIR"
-
-cp "$SCRIPT_DIR/bin/audio-osd"             "$BIN_DIR/audio-osd"
-cp "$SCRIPT_DIR/bin/audio-channel-control"  "$BIN_DIR/audio-channel-control"
-cp "$SCRIPT_DIR/bin/audio-route-apps"       "$BIN_DIR/audio-route-apps"
-cp "$SCRIPT_DIR/bin/audio-router-daemon"    "$BIN_DIR/audio-router-daemon"
-
-chmod +x "$BIN_DIR/audio-osd"
-chmod +x "$BIN_DIR/audio-channel-control"
-chmod +x "$BIN_DIR/audio-route-apps"
-chmod +x "$BIN_DIR/audio-router-daemon"
-
-# Ensure ~/.local/bin is in PATH
+for f in audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply; do
+    cp "$SCRIPT_DIR/bin/$f" "$BIN_DIR/$f"
+    chmod +x "$BIN_DIR/$f"
+done
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
-    warn "$BIN_DIR is not in PATH."
-    if [ -f "$HOME/.bashrc" ]; then
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-        ok "Added to ~/.bashrc — restart your terminal or run: source ~/.bashrc"
-    fi
+    [ -f "$HOME/.bashrc" ] && echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+    warn "Added ~/.local/bin to PATH in ~/.bashrc — run: source ~/.bashrc"
 fi
-
 ok "Scripts installed"
 
-# ---------- PipeWire virtual sinks ----------
+# ---------- Routes database ----------
+info "Installing routing database..."
+mkdir -p "$MIXER_DIR"
+if [ -f "$MIXER_DIR/routes.json" ]; then
+    ok "Keeping existing routes.json (your saved channels)"
+else
+    cp "$SCRIPT_DIR/config/routes.json" "$MIXER_DIR/routes.json"
+    ok "Default routes.json installed"
+fi
 
-info "Configuring PipeWire virtual sinks..."
+# Migrate routes learned by the old reactive daemon, if any (skip junk keys).
+OLD_DB="$HOME/.local/state/audio-router/routing.json"
+if [ -f "$OLD_DB" ]; then
+    MIGRATED=$(python3 - "$OLD_DB" "$MIXER_DIR/routes.json" <<'PY'
+import json, sys
+old_path, new_path = sys.argv[1], sys.argv[2]
+valid = {"Games_Audio", "Discord_Audio", "Music_Audio", "Browser_Audio", "Default_Audio"}
+try:
+    old = json.load(open(old_path))
+    new = json.load(open(new_path))
+except Exception:
+    print(0); sys.exit()
+new.setdefault("binary", {}); new.setdefault("app", {})
+n = 0
+for key, sink in old.items():
+    if sink not in valid or "(deleted)" in key:
+        continue
+    if key in new["binary"] or key in new["app"]:
+        continue
+    new["binary"][key] = sink
+    n += 1
+if n:
+    json.dump(new, open(new_path, "w"), indent=2)
+print(n)
+PY
+)
+    [ "${MIGRATED:-0}" -gt 0 ] && ok "Migrated $MIGRATED saved app route(s) from the old daemon"
+fi
 
+# ---------- Virtual sinks ----------
+info "Configuring 5 virtual sinks..."
 mkdir -p "$PIPEWIRE_CONF_DIR"
 
-cat > "$PIPEWIRE_CONF_DIR/virtual-sinks.conf" << 'SINKEOF'
-# Virtual audio sinks — Audio Mixer for Linux
-# Channel 1 = Games (manually route games here)
-# Channel 2 = Discord
-# Channel 3 = Music (YouTube Music, Spotify, etc.)
-# Channel 4 = Browsers (Chrome, Firefox, Brave, etc.)
-# Default output = unchanged (system sounds, unrouted apps)
+# Pick the downstream node every channel feeds into: EasyEffects if present,
+# otherwise the first non-HDMI hardware output.
+if pactl list sinks short 2>/dev/null | grep -q easyeffects_sink; then
+    DOWNSTREAM="easyeffects_sink"
+    ok "EasyEffects detected — channels will route through it"
+else
+    DOWNSTREAM="$(pactl list sinks short 2>/dev/null | awk '$2 ~ /^alsa_output/ && $2 !~ /hdmi/ {print $2; exit}')"
+    [ -z "$DOWNSTREAM" ] && DOWNSTREAM="@DEFAULT_SINK@"
+    info "EasyEffects not found — channels route to $DOWNSTREAM"
+fi
+sed "s/__DOWNSTREAM__/${DOWNSTREAM}/g" "$SCRIPT_DIR/config/virtual-sinks.conf" > "$PIPEWIRE_CONF_DIR/virtual-sinks.conf"
+ok "Virtual sinks configured (downstream: $DOWNSTREAM)"
 
-context.modules = [
-    # Channel 1: Games
-    {   name = libpipewire-module-loopback
-        args = {
-            node.description = "Games Audio"
-            capture.props = {
-                node.name       = "Games_Audio"
-                media.class     = "Audio/Sink"
-                audio.position  = [ FL FR ]
-            }
-            playback.props = {
-                node.name       = "Games_Audio_out"
-                node.passive    = true
-            }
-        }
-    }
-
-    # Channel 2: Discord
-    {   name = libpipewire-module-loopback
-        args = {
-            node.description = "Discord Audio"
-            capture.props = {
-                node.name       = "Discord_Audio"
-                media.class     = "Audio/Sink"
-                audio.position  = [ FL FR ]
-            }
-            playback.props = {
-                node.name       = "Discord_Audio_out"
-                node.passive    = true
-            }
-        }
-    }
-
-    # Channel 3: Music
-    {   name = libpipewire-module-loopback
-        args = {
-            node.description = "Music Audio"
-            capture.props = {
-                node.name       = "Music_Audio"
-                media.class     = "Audio/Sink"
-                audio.position  = [ FL FR ]
-            }
-            playback.props = {
-                node.name       = "Music_Audio_out"
-                node.passive    = true
-            }
-        }
-    }
-
-    # Channel 4: Browsers
-    {   name = libpipewire-module-loopback
-        args = {
-            node.description = "Browser Audio"
-            capture.props = {
-                node.name       = "Browser_Audio"
-                media.class     = "Audio/Sink"
-                audio.position  = [ FL FR ]
-            }
-            playback.props = {
-                node.name       = "Browser_Audio_out"
-                node.passive    = true
-            }
-        }
-    }
-
-]
-SINKEOF
-
-ok "Virtual sinks configured"
-
-# ---------- Restart PipeWire ----------
-
+# ---------- Restart PipeWire to load the sinks ----------
 info "Restarting PipeWire..."
 systemctl --user restart pipewire pipewire-pulse wireplumber
+sleep 2
+SINK_COUNT=$(pactl list sinks short 2>/dev/null | grep -cE "Games_Audio|Discord_Audio|Music_Audio|Browser_Audio|Default_Audio")
+[ "$SINK_COUNT" -eq 5 ] && ok "All 5 virtual sinks active" || warn "Expected 5 sinks, found $SINK_COUNT (check: pactl list sinks short)"
+
+# ---------- Compile routing rules ----------
+info "Compiling app→channel routing rules..."
+mkdir -p "$PULSE_CONF_DIR"
+"$BIN_DIR/audio-routes-apply"   # writes the pulse config and restarts pipewire-pulse
 sleep 1
+ok "Routing rules applied"
 
-# Verify sinks
-SINK_COUNT=$(pactl list sinks short 2>/dev/null | grep -cE "Games_Audio|Discord_Audio|Music_Audio|Browser_Audio")
-if [ "$SINK_COUNT" -eq 4 ]; then
-    ok "All 4 virtual sinks active"
-else
-    warn "Expected 4 virtual sinks, found $SINK_COUNT. Check: pactl list sinks short"
-fi
+# ---------- systemd user services (single autostart source) ----------
+info "Setting up background services..."
+mkdir -p "$SYSTEMD_DIR"
 
-# Configure EasyEffects to work with virtual sinks (if installed)
-if command -v easyeffects &>/dev/null || flatpak list 2>/dev/null | grep -qi easyeffects; then
-    info "Configuring EasyEffects compatibility..."
-    info "The audio-router-daemon manages EasyEffects output automatically"
-    info "It will route all channel audio through EasyEffects and auto-switch"
-    info "between speakers and headphones via pw-link."
-    ok "EasyEffects detected — daemon will manage routing"
-else
-    info "EasyEffects not detected — channels will route directly to hardware"
-fi
+cat > "$SYSTEMD_DIR/audio-osd.service" << EOF
+[Unit]
+Description=Audio Mixer OSD Overlay
+After=graphical-session.target
+PartOf=graphical-session.target
 
-# ---------- OSD autostart ----------
+[Service]
+ExecStart=$BIN_DIR/audio-osd
+Restart=always
+RestartSec=2
 
-info "Setting up OSD autostart..."
+[Install]
+WantedBy=default.target
+EOF
 
-mkdir -p "$AUTOSTART_DIR"
+cat > "$SYSTEMD_DIR/audio-router-daemon.service" << EOF
+[Unit]
+Description=Audio Mixer Router Daemon
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire-pulse.service
 
-cat > "$AUTOSTART_DIR/audio-osd.desktop" << AEOF
-[Desktop Entry]
-Type=Application
-Name=Audio OSD Daemon
-Exec=$BIN_DIR/audio-osd
-Hidden=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-AEOF
+[Service]
+ExecStart=$BIN_DIR/audio-router-daemon
+Restart=always
+RestartSec=3
 
-ok "OSD will auto-start on login"
+[Install]
+WantedBy=default.target
+EOF
 
-cat > "$AUTOSTART_DIR/audio-router-daemon.desktop" << AEOF
-[Desktop Entry]
-Type=Application
-Name=Audio Router Daemon
-Exec=$BIN_DIR/audio-router-daemon
-Hidden=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-AEOF
-
-ok "Router daemon will auto-start on login"
-
-# Start daemons now
-nohup "$BIN_DIR/audio-osd" >/dev/null 2>&1 &
-sleep 0.3
-ok "OSD daemon started"
-
-nohup "$BIN_DIR/audio-router-daemon" >/dev/null 2>&1 &
-sleep 0.3
-ok "Router daemon started"
+systemctl --user daemon-reload
+systemctl --user enable audio-osd.service audio-router-daemon.service >/dev/null 2>&1
+systemctl --user restart audio-osd.service audio-router-daemon.service
+ok "Services enabled and started (auto-start on login)"
 
 # ---------- GNOME keybindings ----------
-
 if [ -z "$SKIP_KEYBINDINGS" ]; then
     info "Setting up keyboard shortcuts..."
-
     SCRIPT="$BIN_DIR/audio-channel-control"
     GPATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings"
     GSCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding"
-
     EXISTING=$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings 2>/dev/null)
 
-    # NumLock ON key names (KP_1..KP_9) + NumLock OFF equivalents (KP_End, KP_Down, etc.)
-    # Both sets are needed because X11 sends different keysyms depending on NumLock state.
+    # NumLock ON keysyms (KP_1..KP_9, KP_0) + NumLock OFF equivalents.
     BINDINGS=(
         "CH1 Mute (Games)|${SCRIPT} games mute|<Ctrl>KP_1"
         "CH2 Mute (Discord)|${SCRIPT} discord mute|<Ctrl>KP_2"
@@ -314,6 +219,9 @@ if [ -z "$SKIP_KEYBINDINGS" ]; then
         "CH4 Mute (Browser)|${SCRIPT} browser mute|<Ctrl>KP_Delete"
         "CH4 Vol Down (Browser)|${SCRIPT} browser down|<Ctrl>KP_Add"
         "CH4 Vol Up (Browser)|${SCRIPT} browser up|<Ctrl>KP_Subtract"
+        "CH5 Mute (Default)|${SCRIPT} default mute|<Ctrl>KP_0"
+        "CH5 Vol Down (Default)|${SCRIPT} default down|<Ctrl>KP_Divide"
+        "CH5 Vol Up (Default)|${SCRIPT} default up|<Ctrl>KP_Multiply"
         "CH1 Mute (Games) NL|${SCRIPT} games mute|<Ctrl>KP_End"
         "CH2 Mute (Discord) NL|${SCRIPT} discord mute|<Ctrl>KP_Down"
         "CH3 Mute (Music) NL|${SCRIPT} music mute|<Ctrl>KP_Next"
@@ -323,23 +231,23 @@ if [ -z "$SKIP_KEYBINDINGS" ]; then
         "CH1 Vol Up (Games) NL|${SCRIPT} games up|<Ctrl>KP_Home"
         "CH2 Vol Up (Discord) NL|${SCRIPT} discord up|<Ctrl>KP_Up"
         "CH3 Vol Up (Music) NL|${SCRIPT} music up|<Ctrl>KP_Prior"
+        "CH5 Mute (Default) NL|${SCRIPT} default mute|<Ctrl>KP_Insert"
     )
 
-    PATHS=""
-    for i in "${!BINDINGS[@]}"; do
-        NUM=$((100 + i))
-        [ -n "$PATHS" ] && PATHS="${PATHS}, "
-        PATHS="${PATHS}'${GPATH}/custom${NUM}/'"
-    done
-
-    if [ "$EXISTING" != "@as []" ]; then
-        CLEANED=$(echo "$EXISTING" | sed "s|@as \[||;s|\]||;s|'${GPATH}/custom1[0-2][0-9]/'[, ]*||g;s|, *$||")
-        if [ -n "$CLEANED" ] && [ "$CLEANED" != " " ]; then
-            PATHS="${CLEANED}, ${PATHS}"
-        fi
-    fi
-
-    gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "[${PATHS}]"
+    # Build the final keybinding-paths array in Python: keep any of the user's
+    # own custom shortcuts, drop our previous ones (custom100-124), add ours.
+    COUNT=${#BINDINGS[@]}
+    NEWLIST=$(python3 - "$EXISTING" "$GPATH" "$COUNT" <<'PY'
+import sys, re
+existing, gpath, count = sys.argv[1], sys.argv[2], int(sys.argv[3])
+ours = {f"{gpath}/custom{100+i}/" for i in range(count)}
+found = re.findall(r"'([^']*)'", existing or "")
+kept = [p for p in found if p not in ours and not re.search(r"/custom1[0-2][0-9]/$", p)]
+allpaths = kept + [f"{gpath}/custom{100+i}/" for i in range(count)]
+print("[" + ", ".join(f"'{p}'" for p in allpaths) + "]")
+PY
+)
+    gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$NEWLIST"
 
     for i in "${!BINDINGS[@]}"; do
         NUM=$((100 + i))
@@ -348,8 +256,7 @@ if [ -z "$SKIP_KEYBINDINGS" ]; then
         gsettings set "${GSCHEMA}:${GPATH}/custom${NUM}/" command "$CMD"
         gsettings set "${GSCHEMA}:${GPATH}/custom${NUM}/" binding "$BINDING"
     done
-
-    ok "21 keyboard shortcuts configured (NumLock ON + OFF variants)"
+    ok "${#BINDINGS[@]} keyboard shortcuts configured"
 
     echo ""
     echo "  ┌────────────┬───────────────┬───────────────┬───────────────┐"
@@ -359,23 +266,20 @@ if [ -z "$SKIP_KEYBINDINGS" ]; then
     echo "  │ Discord    │  Ctrl+Num2    │  Ctrl+Num5    │  Ctrl+Num8    │"
     echo "  │ Music      │  Ctrl+Num3    │  Ctrl+Num6    │  Ctrl+Num9    │"
     echo "  │ Browser    │  Ctrl+NumDel  │  Ctrl+Num+    │  Ctrl+Num-    │"
+    echo "  │ Default    │  Ctrl+Num0    │  Ctrl+Num/    │  Ctrl+Num*    │"
     echo "  └────────────┴───────────────┴───────────────┴───────────────┘"
 fi
-
-# ---------- Done ----------
 
 echo ""
 echo "============================================"
 echo -e "  ${GREEN}Installation complete!${NC}"
 echo "============================================"
 echo ""
-echo "  Everything is automatic!"
-echo "    - Known apps (Discord, Chrome, Spotify...) are routed automatically"
-echo "    - Unknown apps will trigger a popup asking which channel to use"
-echo "    - All choices are remembered permanently across reboots"
+echo "  Known apps (Discord, Chrome, Spotify, YouTube Music...) route automatically."
+echo "  A new app starts on the Default channel and a popup asks where it belongs."
+echo "  Your choices are saved to ~/.config/audio-mixer/routes.json."
 echo ""
-echo "  Useful commands:"
-echo "    audio-route-apps          — Manually route all playing apps now"
-echo "    pavucontrol               — GUI to manually assign app outputs"
-echo "    pactl list sinks short    — List all audio sinks"
+echo "  Commands:  audio-route-apps     move playing apps onto their channel now"
+echo "             audio-routes-apply   recompile rules after editing routes.json"
+echo "             pavucontrol          GUI for manual tweaks"
 echo ""

@@ -1,159 +1,93 @@
-#!/bin/bash
-# Route known apps to their virtual audio sinks.
-# Uses pw-dump for binary-name matching and pactl move-sink-input for routing.
-# WirePlumber saves these assignments permanently — only run once per new app.
-#
-# Routing logic:
-#   Discord           → Discord_Audio
-#   YouTube Music     → Music_Audio
-#   Spotify           → Music_Audio
-#   Browsers          → Browser_Audio
-#   Everything else   → Games_Audio
+#!/usr/bin/env python3
+"""
+Move every currently-playing app onto its configured channel, right now.
 
-echo "Routing apps to virtual sinks..."
-echo ""
+Routing is normally declarative (apps are born on the right sink at login).
+Use this after editing routes.json, or to fix up streams that were already
+playing, without logging out. Unknown apps are left on the Default channel.
+"""
 
-python3 << 'PYEOF'
-import json, subprocess, sys, os, re
+import json
+import os
+import subprocess
+
+ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
+DEFAULT_SINK = "Default_Audio"
+VIRTUAL_SINKS = {
+    "Games_Audio", "Discord_Audio", "Music_Audio", "Browser_Audio", "Default_Audio",
+}
+VIRTUAL_OUTPUTS = {s + "_out" for s in VIRTUAL_SINKS}
+
 
 def run(cmd):
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    return r.stdout.strip()
+    return subprocess.run(cmd, capture_output=True, text=True).stdout
 
-RESTORE_FILE = os.path.expanduser("~/.local/state/wireplumber/restore-stream")
 
-def persist_target(app_name, target_sink):
-    """Write the routing target into WirePlumber's restore-stream database."""
-    if not os.path.isfile(RESTORE_FILE):
-        return
-    # Escape special chars for WirePlumber's key format
-    escaped = app_name.replace("\\", "\\\\").replace(" ", "\\s").replace("[", "\\o").replace("]", "\\c")
-    key = f"Output/Audio:application.name:{escaped}"
-    target_line = f"{key}:target={target_sink}\n"
+def load_routes():
+    try:
+        with open(ROUTES_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"binary": {}, "app": {}}
 
-    lines = open(RESTORE_FILE).readlines()
-    # Check if target line already exists with correct value
-    target_key = f"{key}:target="
-    found = False
-    new_lines = []
-    for line in lines:
-        if line.startswith(target_key):
-            new_lines.append(target_line)
-            found = True
-        else:
-            new_lines.append(line)
-    if not found:
-        # Insert after the last line for this app (before volume line)
-        volume_key = f"{key}:volume="
-        inserted = False
-        final = []
-        for line in new_lines:
-            final.append(line)
-            if not inserted and line.startswith(volume_key):
-                final.append(target_line)
-                inserted = True
-        if not inserted:
-            # App not in file yet — append a block
-            final.append(f"{key}:channelMap=FL;FR;\n")
-            final.append(f"{key}:channelVolumes=1.0;1.0;\n")
-            final.append(f"{key}:mute=false\n")
-            final.append(target_line)
-            final.append(f"{key}:volume=1.0\n")
-        new_lines = final
-    open(RESTORE_FILE, "w").writelines(new_lines)
 
-# Parse PipeWire graph
-data = json.loads(run(["pw-dump"]))
+def target_for(binary, app, routes):
+    if binary and binary in routes.get("binary", {}):
+        return routes["binary"][binary]
+    if app and app in routes.get("app", {}):
+        return routes["app"][app]
+    return DEFAULT_SINK
 
-# Build lookups in a single pass
-nodes = {}       # node_id -> {name, binary, app, media_class, serial}
-sinks = set()    # sink names
 
-for obj in data:
-    obj_id = obj.get("id")
-    if obj.get("type") != "PipeWire:Interface:Node":
-        continue
-    props = obj.get("info", {}).get("props", {})
-    mc = props.get("media.class", "")
-    nodes[obj_id] = {
-        "name": props.get("node.name", ""),
-        "binary": props.get("application.process.binary", ""),
-        "app": props.get("application.name", ""),
-        "media_class": mc,
-        "serial": str(props.get("object.serial", "")),
-    }
-    if mc == "Audio/Sink":
-        sinks.add(props.get("node.name", ""))
+def sink_names():
+    names = {}
+    for line in run(["pactl", "list", "sinks", "short"]).splitlines():
+        p = line.split()
+        if len(p) >= 2:
+            names[p[0]] = p[1]
+    return names
 
-# Routing rules by binary name
-ROUTING = {
-    "discord": ("Discord_Audio", "Discord"),
-    "youtube-music": ("Music_Audio", "YouTube Music"),
-    "youtubemusic": ("Music_Audio", "YouTube Music"),
-    "spotify": ("Music_Audio", "Spotify"),
-    "plexamp": ("Music_Audio", "Plexamp"),
-}
-BROWSERS = {"chrome", "chromium", "chromium-browser", "google-chrome-stable",
-            "firefox", "firefox-esr", "brave", "brave-browser",
-            "vivaldi", "vivaldi-stable", "opera", "msedge"}
 
-def get_target(binary):
-    bl = binary.lower()
-    if bl in ROUTING:
-        return ROUTING[bl]
-    if bl in BROWSERS:
-        return "Browser_Audio", bl.title()
-    return "Games_Audio", bl
+def main():
+    routes = load_routes()
+    names = sink_names()
+    out = run(["pactl", "list", "sink-inputs"])
+    cur = None
+    streams = []
+    for raw in out.splitlines():
+        s = raw.strip()
+        if s.startswith("Sink Input #"):
+            if cur:
+                streams.append(cur)
+            cur = {"idx": s.split("#")[1], "sink": None, "props": {}}
+        elif s.startswith("Sink:") and cur:
+            cur["sink"] = s.split(":")[1].strip()
+        elif "=" in s and cur:
+            k, _, v = s.partition("=")
+            cur["props"][k.strip()] = v.strip().strip('"')
+    if cur:
+        streams.append(cur)
 
-# Parse pactl sink-inputs to get index→serial mapping
-pactl_out = run(["pactl", "list", "sink-inputs"])
-serial_to_idx = {}
-current_idx = None
-for line in pactl_out.split("\n"):
-    line = line.strip()
-    if line.startswith("Sink Input #"):
-        current_idx = line.split("#")[1]
-    elif "object.serial" in line and "=" in line:
-        serial = line.split("=")[1].strip().strip('"')
-        if current_idx and serial:
-            serial_to_idx[serial] = current_idx
+    moved = 0
+    for st in streams:
+        node = st["props"].get("node.name", "")
+        if node in VIRTUAL_OUTPUTS:
+            continue
+        binary = st["props"].get("application.process.binary", "")
+        app = st["props"].get("application.name", "")
+        if not (binary or app):
+            continue
+        target = target_for(binary, app, routes)
+        if names.get(st["sink"]) == target:
+            continue
+        r = subprocess.run(["pactl", "move-sink-input", st["idx"], target],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f"  {app or binary} → {target.replace('_Audio', '')}")
+            moved += 1
 
-# Route audio streams
-routed = 0
-for nid, node in nodes.items():
-    if node["media_class"] != "Stream/Output/Audio":
-        continue
-    if not node["binary"] or node["name"].endswith("_out"):
-        continue
+    print(f"Moved {moved} stream(s)." if moved else "Everything already on its channel.")
 
-    target_sink, label = get_target(node["binary"])
 
-    if target_sink not in sinks:
-        print(f"  ✗ Sink '{target_sink}' not found — is PipeWire running?")
-        continue
-
-    pactl_idx = serial_to_idx.get(node["serial"])
-    if not pactl_idx:
-        print(f"  ✗ Could not find pactl index for {label} ({node['app'] or node['name']})")
-        continue
-
-    result = subprocess.run(
-        ["pactl", "move-sink-input", pactl_idx, target_sink],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        print(f"  ✓ {label} ({node['app'] or node['name']}) → {target_sink}")
-        routed += 1
-        persist_target(node["app"] or node["name"], target_sink)
-    else:
-        print(f"  ✗ Failed to route {label}: {result.stderr.strip()}")
-
-if routed == 0:
-    print("  No audio streams found. Make sure apps are playing audio.")
-
-PYEOF
-
-echo ""
-echo "Done! PipeWire will remember these assignments for future sessions."
-echo ""
-echo "Tip: If an app doesn't appear, make sure it's playing audio, then re-run this script."
+if __name__ == "__main__":
+    main()
