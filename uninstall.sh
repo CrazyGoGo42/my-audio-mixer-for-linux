@@ -31,6 +31,9 @@ info "Removing scripts..."
 for f in audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply; do
     rm -f "$HOME/.local/bin/$f"
 done
+# Legacy artifacts from older versions
+rm -f "$HOME/.local/bin/setup-audio-keybindings.sh"
+rm -rf "$HOME/.local/state/audio-router"
 ok "Scripts removed"
 
 # ---------- Remove configs ----------
