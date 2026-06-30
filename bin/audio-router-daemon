@@ -16,12 +16,18 @@ It does exactly two things:
   2. Keeps the channel → EasyEffects → hardware chain wired if EasyEffects
      restarts and recreates its sink.
 
-No notifications. No volume juggling (audio-channel-control sets channel volume
-directly). Singleton: a new instance replaces the old one.
+  3. Remembers each channel's volume across reboots. WirePlumber saves these
+     loopback-sink volumes but does NOT reliably re-apply them at login (the
+     channels come up at 100%), so we snapshot them while you use them and
+     re-apply the saved levels once at login. This restores once at startup; it
+     does not fight volume changes you make during the session.
+
+No notifications. Singleton: a new instance replaces the old one.
 """
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -32,7 +38,12 @@ CHAIN_POLL_SECONDS = 3
 
 PID_FILE = "/tmp/audio-router-daemon.pid"
 ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
+VOL_FILE = os.path.expanduser("~/.config/audio-mixer/volumes.json")
 APPLY_CMD = os.path.expanduser("~/.local/bin/audio-routes-apply")
+
+# Set true once saved volumes have been restored at startup, so the periodic
+# snapshot never overwrites the saved file with the boot-time 100% defaults.
+volumes_ready = False
 
 DEFAULT_SINK = "Default_Audio"
 VIRTUAL_SINKS = {
@@ -238,6 +249,67 @@ def fix_chain():
 
 
 # --------------------------------------------------------------------------- #
+# Per-channel volume persistence
+# --------------------------------------------------------------------------- #
+
+def channel_volume_raw(sink):
+    """Current raw PA volume for a sink (65536 == 100%), or None if absent."""
+    m = re.search(r":\s*(\d+)\s*/", run(["pactl", "get-sink-volume", sink]))
+    return int(m.group(1)) if m else None
+
+
+def snapshot_volumes():
+    """{sink: raw_volume} for every channel currently present."""
+    vols = {}
+    for sink in VIRTUAL_SINKS:
+        v = channel_volume_raw(sink)
+        if v is not None:
+            vols[sink] = v
+    return vols
+
+
+def save_volumes():
+    """Persist current channel volumes — only a complete, changed snapshot."""
+    vols = snapshot_volumes()
+    if len(vols) < len(VIRTUAL_SINKS):
+        return  # channels not all up yet; never persist a partial snapshot
+    try:
+        with open(VOL_FILE) as f:
+            if json.load(f) == vols:
+                return  # unchanged, skip the write
+    except Exception:
+        pass
+    os.makedirs(os.path.dirname(VOL_FILE), exist_ok=True)
+    tmp = VOL_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(vols, f, indent=2)
+    os.replace(tmp, VOL_FILE)
+
+
+def restore_volumes():
+    """Re-apply the saved channel volumes (no-op on first ever run)."""
+    try:
+        with open(VOL_FILE) as f:
+            vols = json.load(f)
+    except Exception:
+        return
+    for sink, raw in vols.items():
+        if sink in VIRTUAL_SINKS:
+            subprocess.run(["pactl", "set-sink-volume", sink, str(int(raw))],
+                           capture_output=True, text=True)
+
+
+def wait_for_channels(timeout=30):
+    """Block until all virtual sinks exist (or timeout)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if VIRTUAL_SINKS.issubset(set(sink_index_to_name().values())):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 
@@ -289,10 +361,23 @@ def main():
 
     time.sleep(2)  # let PipeWire settle on login
 
+    # Re-apply saved per-channel volumes once the channels exist. WirePlumber's
+    # own restore runs at WirePlumber startup (before we get here) and leaves
+    # these loopback sinks at 100%, so by now it's safe to overwrite it. Applied
+    # twice a few seconds apart to win any lingering race, then we mark volumes
+    # ready so the snapshot loop may begin saving.
+    global volumes_ready
+    wait_for_channels()
+    restore_volumes()
+    time.sleep(3)
+    restore_volumes()
+    volumes_ready = True
+
     # Keep the channel -> EasyEffects chain wired even when EasyEffects starts
     # late or restarts. fix_chain() is idempotent (it only moves a link that has
     # drifted), so polling it is quiet and self-healing, and it sidesteps the
-    # timing races of reacting to individual graph events.
+    # timing races of reacting to individual graph events. The same poll snapshots
+    # channel volumes so the latest levels survive the next reboot.
     def chain_watch():
         while True:
             time.sleep(CHAIN_POLL_SECONDS)
@@ -300,6 +385,11 @@ def main():
                 fix_chain()
             except Exception:
                 pass
+            if volumes_ready:
+                try:
+                    save_volumes()
+                except Exception:
+                    pass
     threading.Thread(target=chain_watch, daemon=True).start()
 
     # Outer loop keeps us alive across pipewire-pulse restarts: `pactl subscribe`
