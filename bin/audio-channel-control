@@ -25,9 +25,15 @@ esac
 # Auto-start OSD daemon if its pipe is missing.
 [ ! -p "$FIFO" ] && { nohup "$HOME/.local/bin/audio-osd" >/dev/null 2>&1 & sleep 0.3; }
 
-# Current intended volume (default 100).
+# Current intended volume. The cache lives in /tmp, which is wiped on reboot, so
+# when it's missing fall back to the sink's ACTUAL level — never to a blind 100,
+# which would jump the channel to full volume on the first keypress after a boot
+# (and make the OSD report 100% for a channel that is really much lower).
 VOL=$(grep "^${SINK}=" "$STATE" 2>/dev/null | tail -1 | cut -d= -f2)
-[ -z "$VOL" ] && VOL=100
+if [ -z "$VOL" ]; then
+    VOL=$(pactl get-sink-volume "$SINK" 2>/dev/null | grep -oP '/\s*\K[0-9]+(?=%)' | head -1)
+    [ -z "$VOL" ] && VOL=100
+fi
 
 write_state() {
     if grep -q "^${SINK}=" "$STATE" 2>/dev/null; then
