@@ -78,7 +78,7 @@ rm -f "$HOME/.config/wireplumber/main.lua.d/90-audio-mixer-routing.lua" 2>/dev/n
 # ---------- Install scripts ----------
 info "Installing scripts to $BIN_DIR..."
 mkdir -p "$BIN_DIR"
-for f in audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply; do
+for f in audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog; do
     cp "$SCRIPT_DIR/bin/$f" "$BIN_DIR/$f"
     chmod +x "$BIN_DIR/$f"
 done
@@ -192,9 +192,23 @@ RestartSec=3
 WantedBy=default.target
 EOF
 
+cat > "$SYSTEMD_DIR/easyeffects-watchdog.service" << EOF
+[Unit]
+Description=EasyEffects Watchdog
+After=pipewire.service wireplumber.service graphical-session.target
+
+[Service]
+ExecStart=$BIN_DIR/easyeffects-watchdog
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
 systemctl --user daemon-reload
-systemctl --user enable audio-osd.service audio-router-daemon.service >/dev/null 2>&1
-systemctl --user restart audio-osd.service audio-router-daemon.service
+systemctl --user enable audio-osd.service audio-router-daemon.service easyeffects-watchdog.service >/dev/null 2>&1
+systemctl --user restart audio-osd.service audio-router-daemon.service easyeffects-watchdog.service
 ok "Services enabled and started (auto-start on login)"
 
 # ---------- GNOME keybindings ----------

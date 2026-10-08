@@ -13,9 +13,10 @@ echo ""
 
 # ---------- Stop & remove services ----------
 info "Stopping background services..."
-systemctl --user disable --now audio-osd.service audio-router-daemon.service >/dev/null 2>&1 || true
+systemctl --user disable --now audio-osd.service audio-router-daemon.service easyeffects-watchdog.service >/dev/null 2>&1 || true
 rm -f "$HOME/.config/systemd/user/audio-osd.service"
 rm -f "$HOME/.config/systemd/user/audio-router-daemon.service"
+rm -f "$HOME/.config/systemd/user/easyeffects-watchdog.service"
 systemctl --user daemon-reload 2>/dev/null || true
 # Legacy XDG autostart from older installs
 rm -f "$HOME/.config/autostart/audio-osd.desktop"
@@ -28,7 +29,7 @@ ok "Services stopped and removed"
 
 # ---------- Remove scripts ----------
 info "Removing scripts..."
-for f in audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply; do
+for f in audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog; do
     rm -f "$HOME/.local/bin/$f"
 done
 # Legacy artifacts from older versions
