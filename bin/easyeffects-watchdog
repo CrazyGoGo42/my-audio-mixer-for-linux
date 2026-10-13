@@ -12,6 +12,22 @@ FAILS=0
 
 log() { echo "[easyeffects-watchdog] $*"; }
 
+# systemd starts us before GNOME exports DISPLAY/XAUTHORITY into the user
+# manager, and a process can't inherit them after the fact. EE (and the
+# `-a input` probe) are Qt apps that abort without a display, so we'd kill a
+# healthy instance and every relaunch would die. Pull the vars from the manager
+# each pass; until they exist there's nothing we can judge, so do nothing.
+import_display_env() {
+    [ -n "$DISPLAY$WAYLAND_DISPLAY" ] && return 0
+    local line
+    while IFS= read -r line; do
+        case "$line" in
+            DISPLAY=*|XAUTHORITY=*|WAYLAND_DISPLAY=*) export "$line" ;;
+        esac
+    done < <(systemctl --user show-environment 2>/dev/null)
+    [ -n "$DISPLAY$WAYLAND_DISPLAY" ]
+}
+
 start_service() {
     rm -f "$LOCKDIR/EasyEffectsServer" "$LOCKDIR/easyeffects.lock"
     setsid -f flatpak run "$APP" --service-mode --hide-window >/dev/null 2>&1
@@ -28,7 +44,9 @@ recover() {
 
 sleep 30   # let the session, PipeWire and EE's own autostart settle
 while true; do
-    if ! pgrep -f 'easyeffects --service-mode' >/dev/null; then
+    if ! import_display_env; then
+        :   # session not exported yet - wait
+    elif ! pgrep -f 'easyeffects --service-mode' >/dev/null; then
         recover "service not running"
     elif timeout "$PROBE_TIMEOUT" flatpak run "$APP" -a input >/dev/null 2>&1; then
         FAILS=0
