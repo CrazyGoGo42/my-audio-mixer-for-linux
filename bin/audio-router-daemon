@@ -25,6 +25,7 @@ It does exactly two things:
 No notifications. Singleton: a new instance replaces the old one.
 """
 
+import glob
 import json
 import os
 import re
@@ -169,7 +170,26 @@ def identity_key(stream):
 # Dialog + assignment
 # --------------------------------------------------------------------------- #
 
+def ensure_display():
+    """zenity is a GTK app and needs an X display. When systemd starts this
+    daemon early at login, DISPLAY/XAUTHORITY aren't in its environment yet (the
+    graphical session exports them a moment later), and a process can't inherit
+    them after the fact. Discover them ourselves so the routing prompt can draw
+    regardless of startup ordering."""
+    if not os.environ.get("DISPLAY"):
+        socks = sorted(glob.glob("/tmp/.X11-unix/X*"))
+        if socks:
+            os.environ["DISPLAY"] = ":" + os.path.basename(socks[0])[1:]
+    if not os.environ.get("XAUTHORITY"):
+        for cand in (f"/run/user/{os.getuid()}/gdm/Xauthority",
+                     os.path.expanduser("~/.Xauthority")):
+            if os.path.exists(cand):
+                os.environ["XAUTHORITY"] = cand
+                break
+
+
 def ask_channel(display):
+    ensure_display()
     rows = []
     for sink, label in CHANNELS:
         rows += [sink, label]
