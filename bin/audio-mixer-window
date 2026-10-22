@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""
+The Audio Mixer window — VoiceMeeter-style strips for the mic, every channel,
+EasyEffects and All Audio, plus the apps playing right now.
+
+Single instance: launching it again brings the open window to the front. It's
+optional — hotkeys, routing and the router daemon work without it. While it
+runs, the router daemon leaves new apps to it instead of popping up a dialog.
+
+    AUDIO_MIXER_SNAPSHOT=/path/shot.png audio-mixer-window
+        renders the window to a PNG after it has loaded, then quits.
+"""
+
+import os
+import sys
+
+# The shared audiomixer package: lib/ next to bin/ in the repo, or installed.
+for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"),
+             os.path.expanduser("~/.local/lib/audio-mixer")):
+    if os.path.isdir(os.path.join(_lib, "audiomixer")):
+        sys.path.insert(0, _lib)
+        break
+
+import gi  # noqa: E402
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, GLib  # noqa: E402
+
+from audiomixer.config import load_channels  # noqa: E402
+from audiomixer.ui.controller import Controller  # noqa: E402
+from audiomixer.ui.window import MixerWindow, save_png  # noqa: E402
+
+APP_ID = "io.github.crazygogo42.AudioMixer"  # the router daemon checks this name
+
+
+def main():
+    app = Adw.Application(application_id=APP_ID)
+    controllers = []
+
+    def activate(app):
+        win = app.get_active_window()
+        if win:
+            win.present()
+            return
+        controller = Controller(load_channels())
+        controllers.append(controller)
+        win = MixerWindow(controller, application=app)
+        controller.refresh(status_too=True)
+        controller.start()
+        win.present()
+        shot = os.environ.get("AUDIO_MIXER_SNAPSHOT")
+        if shot:
+            def snap():
+                save_png(win, shot)
+                app.quit()
+                return False
+            GLib.timeout_add(1200, snap)
+
+    app.connect("activate", activate)
+    app.connect("shutdown", lambda app: [c.stop() for c in controllers])
+    return app.run(sys.argv[:1])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

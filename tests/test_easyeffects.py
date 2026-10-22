@@ -6,7 +6,7 @@ import time
 import unittest
 
 from audiomixer import easyeffects
-from audiomixer.easyeffects import launch, point_at, point_at_mixer, set_devices
+from audiomixer.easyeffects import launch, output_preset, point_at, point_at_mixer, set_devices
 
 # The user's real easyeffectsrc on 2026-10-23 (EasyEffects 8.3.0).
 REAL_RC = """\
@@ -88,6 +88,16 @@ class SetDevicesTest(unittest.TestCase):
     def test_already_set_is_unchanged(self):
         once = set_devices(REAL_RC, "Mic_In", "EE_Return")
         self.assertEqual(set_devices(once, "Mic_In", "EE_Return"), once)
+
+
+class OutputPresetTest(unittest.TestCase):
+    def test_reads_last_loaded_output_preset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = os.path.join(tmp, "easyeffectsrc")
+            with open(rc, "w") as f:
+                f.write(REAL_RC)
+            self.assertEqual(output_preset(rc), "Bass Boosted")
+            self.assertIsNone(output_preset(os.path.join(tmp, "missing")))
 
 
 class _FakeCommandsBase(unittest.TestCase):

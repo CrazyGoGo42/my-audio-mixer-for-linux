@@ -66,6 +66,17 @@ def set_devices(rc_text, input_device, output_device):
     return rc_text
 
 
+def output_preset(rc_file=RC_FILE):
+    """Name of the last loaded output preset, or None."""
+    inside = False
+    for line in _read(rc_file).splitlines():
+        if line.startswith("["):
+            inside = line.strip() == "[Presets]"
+        elif inside and line.startswith("lastLoadedOutputPreset="):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
 def is_running():
     return subprocess.run(["pgrep", "-f", "easyeffects --service-mode"],
                           capture_output=True).returncode == 0
