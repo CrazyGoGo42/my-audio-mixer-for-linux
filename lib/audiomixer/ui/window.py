@@ -4,6 +4,7 @@ from gi.repository import Adw, Gtk
 
 from ..config import ALL_AUDIO, EE_RETURN, MIC_IN
 from ..live import strip_targets
+from .apps import AppsList
 from .strip import SLOTS, ChannelStrip, EasyEffectsStrip, MenuButton, MicStrip, StripWidget
 
 
@@ -31,7 +32,7 @@ def save_png(widget, path):
 class MixerWindow(Adw.ApplicationWindow):
     def __init__(self, controller, application=None):
         super().__init__(application=application, title="Audio Mixer")
-        self.set_default_size(1040, 600)
+        self.set_default_size(1040, 760)
         self.controller = controller
 
         toolbar = Adw.ToolbarView()
@@ -71,6 +72,15 @@ class MixerWindow(Adw.ApplicationWindow):
             self.strips_row.append(strip)
         self.body.append(self.strips_row)
 
+        self.apps = AppsList(controller)
+        apps_scroll = Gtk.ScrolledWindow()
+        apps_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        apps_scroll.set_min_content_height(90)
+        apps_scroll.set_propagate_natural_height(True)
+        apps_scroll.set_max_content_height(260)
+        apps_scroll.set_child(self.apps)
+        self.body.append(apps_scroll)
+
         toolbar.set_content(self.body)
         self.set_content(toolbar)
         controller.subscribe(self)
@@ -78,6 +88,7 @@ class MixerWindow(Adw.ApplicationWindow):
     def update(self, snapshot, status):
         for strip in self.strips:
             strip.update(snapshot.strips.get(strip.name), status)
+        self.apps.update(snapshot, status)
         if status:
             self._update_slots(status)
 

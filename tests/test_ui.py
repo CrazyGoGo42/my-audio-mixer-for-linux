@@ -64,9 +64,12 @@ class UiTestBase(unittest.TestCase):
         self.snap = snapshot(Music_Audio=(25, False))
         self.status = status()
         self.calls, self.commands = [], []
+        self.moves = []
         self.controller = Controller(CHS, read_snapshot=lambda ch: self.snap,
                                      read_status=lambda ch: self.status,
-                                     run=self.calls.append, run_command=self.commands.append)
+                                     run=self.calls.append, run_command=self.commands.append,
+                                     remember=lambda props, sink: self.moves.append(("remember", props["application.process.binary"], sink)),
+                                     route_now=lambda idx, sink: self.moves.append(("route", list(idx), sink)))
         self.win = MixerWindow(self.controller)
         self.controller.refresh(status_too=True)
 
@@ -172,6 +175,46 @@ class RoutingControlsTest(UiTestBase):
         self.assertEqual([text for text, _ in mic.menu.items], ["Automatic", "Blue mic"])
         dict(mic.menu.items)["Automatic"]()
         self.assertEqual(self.commands, [["mic", "auto"]])
+
+
+class PlayingNowTest(UiTestBase):
+    def row(self, name):
+        return next(r for r in self.win.apps.rows if r.app.name == name)
+
+    def test_rows_follow_snapshot(self):
+        self.assertEqual([r.app.name for r in self.win.apps.rows], ["Audacity", "Zen"])
+        self.snap.apps = [a for a in self.snap.apps if a.name == "Zen"]
+        self.controller.refresh()
+        self.assertEqual([r.app.name for r in self.win.apps.rows], ["Zen"])
+
+    def test_empty_list_says_so(self):
+        self.snap.apps = []
+        self.controller.refresh()
+        self.assertEqual(self.win.apps.rows, [])
+        self.assertTrue(self.win.apps.empty.get_visible())
+
+    def test_new_app_has_marker(self):
+        self.assertTrue(self.row("Audacity").new.get_visible())
+        self.assertFalse(self.row("Zen").new.get_visible())
+
+    def test_current_channel_is_active(self):
+        self.assertEqual([t.get_active() for t in self.row("Zen").channel_toggles], [False, False, False, True])
+
+    def test_clicking_a_channel_remembers_then_moves_every_stream(self):
+        self.row("Zen").channel_toggles[2].set_active(True)   # Music
+        self.assertEqual(self.moves, [("remember", "zen", "Music_Audio"),
+                                      ("route", [119, 141], "Music_Audio")])
+
+    def test_move_of_vanished_stream_still_saves_route(self):
+        def gone(indexes, sink):
+            raise OSError("stream vanished")
+        self.controller._route_now = gone
+        self.row("Audacity").channel_toggles[1].set_active(True)  # no exception escapes
+        self.assertEqual(self.moves, [("remember", "audacity", "Discord_Audio")])
+
+    def test_refresh_never_moves_apps(self):
+        self.controller.refresh(status_too=True)
+        self.assertEqual(self.moves, [])
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ import time
 
 from gi.repository import GLib
 
-from .. import commands, easyeffects, live
+from .. import apps, commands, easyeffects, live
 from ..config import STATE_FILE, load_state
 from ..pwgraph import read_graph
 
@@ -38,12 +38,15 @@ def _run(argv):
 
 
 class Controller:
-    def __init__(self, channels, read_snapshot=None, read_status=None, run=None, run_command=None):
+    def __init__(self, channels, read_snapshot=None, read_status=None, run=None, run_command=None,
+                 remember=None, route_now=None):
         self.channels = channels
         self._read_snapshot = read_snapshot or live.read_snapshot
         self._read_status = read_status or globals()["read_status"]
         self._run = run or _run
         self._run_command = run_command or commands.run
+        self._remember = remember or apps.remember
+        self._route_now = route_now or apps.route_now
         self.snapshot = live.Snapshot()
         self.status = None
         self.views = []
@@ -86,6 +89,16 @@ class Controller:
         except ValueError:
             pass
         self.refresh(status_too=True)
+
+    def move_app(self, row, sink):
+        """Put an app on a channel: remember it first (so it's born there next
+        time even if the stream is already gone), then move what's playing."""
+        self._remember(row.props, sink)
+        try:
+            self._route_now(row.indexes, sink)
+        except Exception:  # noqa: BLE001 — a vanished stream must not break the window
+            pass
+        self.refresh()
 
     # ---------------------------------------------------------- live updates
     def start(self):
