@@ -41,7 +41,7 @@ from audiomixer.config import (  # noqa: E402
 from audiomixer.pwgraph import read_graph  # noqa: E402
 from audiomixer.reconcile import plan_changes, reconcile_once  # noqa: E402
 from audiomixer.render import needs_restart, render_routes, render_sinks  # noqa: E402
-from audiomixer.routing import desired_links, managed_nodes  # noqa: E402
+from audiomixer.routing import desired_links, managed_nodes, unpairable_routes  # noqa: E402
 
 ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
 SINKS_FILE = os.path.expanduser("~/.config/pipewire/pipewire.conf.d/virtual-sinks.conf")
@@ -105,7 +105,9 @@ def wiring_problems(channels):
     if any(state.channels[c.key].fx for c in channels) and EE_SINK not in graph.nodes:
         return ["EasyEffects isn't running yet; FX channels stay silent until it starts"]
     missing, _ = plan_changes(desired_links(channels, state, graph), graph, managed_nodes(channels))
-    return sorted({f"{out.split(':')[0]} -> {inp.split(':')[0]}" for out, inp in missing})
+    problems = {f"{out.split(':')[0]} -> {inp.split(':')[0]}" for out, inp in missing}
+    problems |= {f"{a} -> {b} (no matching channels)" for a, b in unpairable_routes(channels, state, graph)}
+    return sorted(problems)
 
 
 def restart_pipewire(channels):
@@ -121,6 +123,13 @@ def restart_pipewire(channels):
     ee_was_running = easyeffects.is_running()
     if ee_was_running:
         easyeffects.quit()
+    # The daemon must not see the restart: the new nodes come up at 100%, and
+    # it has to restore the saved levels *before* anything links them, which
+    # it does when it starts. So stop it now and start it afterwards.
+    daemon = "audio-router-daemon.service"
+    daemon_was_running = subprocess.run(["systemctl", "--user", "is-active", "--quiet", daemon]).returncode == 0
+    if daemon_was_running:
+        systemctl("stop", daemon)
     systemctl("restart", "pipewire", "pipewire-pulse", "wireplumber")
     # Give the nodes time to settle before EasyEffects' sink appears. With the
     # old WirePlumber-linked channels, relaunching after only 2s once left a
@@ -128,11 +137,14 @@ def restart_pipewire(channels):
     time.sleep(8)
     if ee_was_running:
         easyeffects.launch()
-    # Wire everything now rather than waiting for the daemon's next pass, then
-    # say so if something didn't make it, rather than leaving it silently dead.
-    deadline = time.time() + 15
+    if daemon_was_running:
+        systemctl("start", daemon)  # restores volumes, then links
+    # Say so if something didn't get wired, rather than leaving it silently
+    # dead. Without a daemon (first install) nobody else links: do it here.
+    deadline = time.time() + 20
     while True:
-        reconcile_once()
+        if not daemon_was_running:
+            reconcile_once()
         problems = wiring_problems(channels)
         if not problems or time.time() > deadline:
             break
@@ -140,8 +152,6 @@ def restart_pipewire(channels):
     if problems:
         print("Not wired yet:\n  " + "\n  ".join(problems)
               + "\nRun `audio-routes-apply --restart-pipewire` to retry.", file=sys.stderr)
-    # The daemon reads the channel list at startup.
-    systemctl("try-restart", "audio-router-daemon.service")
 
 
 def main():

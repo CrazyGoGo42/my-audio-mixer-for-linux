@@ -42,16 +42,27 @@ def resolve_slot(value, graph, own):
     return name
 
 
-def _is_hardware_mic(node, own):
-    return (node.media_class == "Audio/Source"
-            and node.props.get("device.api") in HARDWARE_APIS
-            and not node.props.get("node.virtual")
-            and node.name not in own)
+def _hardware(graph, media_class, own):
+    return sorted(n.name for n in graph.nodes.values()
+                  if n.media_class == media_class
+                  and n.props.get("device.api") in HARDWARE_APIS
+                  and not n.props.get("node.virtual")
+                  and n.name not in own)
+
+
+def hardware_outputs(graph, own=frozenset()):
+    """Real output devices present (speakers, headset, HDMI, ...), by name."""
+    return _hardware(graph, "Audio/Sink", own)
+
+
+def hardware_mics(graph, own=frozenset()):
+    """Real microphones present — never a monitor or a virtual source."""
+    return _hardware(graph, "Audio/Source", own)
 
 
 def pick_mic(state, graph, own=frozenset()):
     """The real microphone that feeds Mic_In, or None."""
-    mics = sorted(n.name for n in graph.nodes.values() if _is_hardware_mic(n, own))
+    mics = hardware_mics(graph, own)
     if state.mic != AUTO_MIC:
         return state.mic if state.mic in mics else None
     usb = [m for m in mics if m.startswith("alsa_input.usb-")]
@@ -70,27 +81,42 @@ def port_pairs(out_node, in_node, graph):
     return pairs
 
 
-def desired_links(channels, state, graph):
+def wanted_routes(channels, state, graph):
+    """[(from node, to node)] that should be connected right now."""
     own = own_nodes(channels)
-    links = set()
+    routes = []
 
     def slots_to(out_node, slots):
         for slot in slots:
             device = resolve_slot(state.slots.get(slot), graph, own)
             if device:
-                links.update(port_pairs(out_node, device, graph))
+                routes.append((out_node, device))
 
     for ch in channels:
         out = ch.sink + "_out"
         cs = state.channels.get(ch.key)
-        links.update(port_pairs(out, ALL_IN, graph))
+        routes.append((out, ALL_IN))
         if cs is None or cs.fx:
-            links.update(port_pairs(out, EE_SINK, graph))
+            if EE_SINK in graph.nodes:
+                routes.append((out, EE_SINK))
         else:
             slots_to(out, cs.outputs)
     slots_to(EE_RETURN_OUT, state.fx_outputs)
 
     mic = pick_mic(state, graph, own)
     if mic:
-        links.update(port_pairs(mic, MIC_IN_IN, graph))
+        routes.append((mic, MIC_IN_IN))
+    return [r for r in routes if r[0] in graph.nodes]
+
+
+def desired_links(channels, state, graph):
+    links = set()
+    for out_node, in_node in wanted_routes(channels, state, graph):
+        links.update(port_pairs(out_node, in_node, graph))
     return links
+
+
+def unpairable_routes(channels, state, graph):
+    """Wanted routes whose ports can't be paired (e.g. unknown channel names):
+    they would silently carry no sound."""
+    return [r for r in wanted_routes(channels, state, graph) if not port_pairs(*r, graph)]

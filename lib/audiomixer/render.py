@@ -93,7 +93,7 @@ def render_sinks(channels, state):
     lines += _loopback(
         "EasyEffects",
         f'node.name = "{EE_RETURN}" media.class = "Audio/Sink" audio.position = [ FL FR ] priority.session = 1',
-        f'node.name = "{EE_RETURN}_out" node.passive = true node.autoconnect = false',
+        f'node.name = "{EE_RETURN}_out" node.passive = true node.autoconnect = false audio.position = [ FL FR ]',
         "EasyEffects plays into EE_Return; EE_Return_out is the EasyEffects strip")
     lines += _loopback(
         "Mixer Mic",

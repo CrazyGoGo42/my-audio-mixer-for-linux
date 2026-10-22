@@ -6,7 +6,7 @@ info() { echo -e "${BLUE}[INFO]${NC}  $1"; }
 ok()   { echo -e "${GREEN}[OK]${NC}    $1"; }
 
 MIXER_DIR="$HOME/.config/audio-mixer"
-SCRIPTS="audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog audio-mixer-backup"
+SCRIPTS="audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog audio-mixer-backup audio-mixer"
 UNITS="audio-osd.service audio-router-daemon.service easyeffects-watchdog.service audio-mixer-backup.service audio-mixer-backup.timer"
 
 # Our channel sinks, read now — the channel list may be deleted below.
@@ -33,6 +33,16 @@ pkill -f "$HOME/.local/bin/audio-router-daemon" 2>/dev/null || true
 pkill -f "$HOME/.local/bin/audio-osd" 2>/dev/null || true
 rm -f /tmp/audio-osd.pid /tmp/audio-osd.fifo /tmp/audio-router-daemon.pid /tmp/audio-mixer-volumes
 ok "Services stopped and removed"
+
+# ---------- EasyEffects back to its own device choice ----------
+# It was pinned to the Mixer Mic / EasyEffects strip, which are about to go.
+if python3 - "$HOME/.local/lib/audio-mixer" 2>/dev/null <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from audiomixer.easyeffects import point_at
+point_at(None, None)
+PY
+then ok "EasyEffects follows your default mic and output again"; fi
 
 # ---------- Remove scripts ----------
 info "Removing scripts..."

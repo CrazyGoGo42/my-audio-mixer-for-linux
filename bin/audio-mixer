@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+audio-mixer — control the mixer from the command line (the window uses it too).
+
+    audio-mixer status [--json]                 what goes where right now
+    audio-mixer devices [--json]                real outputs and mics you can pick
+    audio-mixer fx <channel> on|off|toggle      through EasyEffects, or dry
+    audio-mixer out <channel|fx> <A1-A4> on|off|toggle
+                                                which output slots a channel (or
+                                                the EasyEffects strip, "fx") plays on
+    audio-mixer slot <A1-A4> <device>|default|none
+                                                which device a slot is
+    audio-mixer eq <channel> bass|treble <dB>   -12 … +12, 0 = flat
+    audio-mixer mic auto|<device>               which real mic feeds EasyEffects
+
+<channel> is a key or label from channels.conf (e.g. desktop, discord, music).
+Changes are saved to ~/.config/audio-mixer/mixer.json and take effect at once;
+the router daemon keeps them wired from then on. A channel's slots only matter
+while its FX is off — with FX on it plays where the EasyEffects strip plays.
+"""
+
+import copy
+import json
+import os
+import sys
+
+# The shared audiomixer package: lib/ next to bin/ in the repo, or installed.
+for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"),
+             os.path.expanduser("~/.local/lib/audio-mixer")):
+    if os.path.isdir(os.path.join(_lib, "audiomixer")):
+        sys.path.insert(0, _lib)
+        break
+from audiomixer.config import (  # noqa: E402
+    AUTO_MIC, DEFAULT_OUTPUT, EQ_LIMIT_DB, SLOTS, load_channels, load_state, save_state,
+)
+from audiomixer.pwgraph import read_graph  # noqa: E402
+from audiomixer.reconcile import apply_eq, reconcile_once  # noqa: E402
+from audiomixer.routing import (  # noqa: E402
+    hardware_mics, hardware_outputs, own_nodes, pick_mic, resolve_slot,
+)
+
+
+def _channel(channels, name):
+    for ch in channels:
+        if name.lower() in (ch.key.lower(), ch.label.lower()):
+            return ch
+    raise ValueError(f"unknown channel {name!r} (choose: {', '.join(c.label.lower() for c in channels)})")
+
+
+def _slot(name):
+    if name.upper() not in SLOTS:
+        raise ValueError(f"unknown slot {name!r} (choose: {', '.join(SLOTS)})")
+    return name.upper()
+
+
+def _switch(current, word):
+    if word not in ("on", "off", "toggle"):
+        raise ValueError(f"expected on, off or toggle, not {word!r}")
+    return (not current) if word == "toggle" else word == "on"
+
+
+def _set_slot(slots, slot, on):
+    chosen = set(slots) | {slot} if on else set(slots) - {slot}
+    return [s for s in SLOTS if s in chosen]
+
+
+def apply_command(argv, channels, state):
+    """The new MixerState after one command (the given state is not changed)."""
+    s = copy.deepcopy(state)
+    cmd, args = (argv[0], argv[1:]) if argv else ("", [])
+    if cmd == "fx" and len(args) == 2:
+        cs = s.channels[_channel(channels, args[0]).key]
+        cs.fx = _switch(cs.fx, args[1])
+    elif cmd == "out" and len(args) == 3:
+        slot = _slot(args[1])
+        if args[0].lower() == "fx":
+            s.fx_outputs = _set_slot(s.fx_outputs, slot, _switch(slot in s.fx_outputs, args[2]))
+        else:
+            cs = s.channels[_channel(channels, args[0]).key]
+            cs.outputs = _set_slot(cs.outputs, slot, _switch(slot in cs.outputs, args[2]))
+    elif cmd == "slot" and len(args) == 2:
+        s.slots[_slot(args[0])] = {"default": DEFAULT_OUTPUT, "none": None}.get(args[1], args[1])
+    elif cmd == "eq" and len(args) == 3:
+        cs = s.channels[_channel(channels, args[0]).key]
+        if args[1] not in ("bass", "treble"):
+            raise ValueError(f"expected bass or treble, not {args[1]!r}")
+        try:
+            db = float(args[2])
+        except ValueError:
+            raise ValueError(f"expected a number of dB, not {args[2]!r}") from None
+        setattr(cs, args[1], max(-EQ_LIMIT_DB, min(EQ_LIMIT_DB, db)))
+    elif cmd == "mic" and len(args) == 1:
+        s.mic = AUTO_MIC if args[0] == "auto" else args[0]
+    else:
+        raise ValueError("unknown command; run `audio-mixer --help`")
+    return s
+
+
+def _description(graph, name):
+    node = graph.nodes.get(name) if name else None
+    return node.props.get("node.description") if node else None
+
+
+def status_dict(channels, state, graph):
+    """Everything the window needs to draw the routing (its data contract)."""
+    own = own_nodes(channels)
+    slots = {}
+    for slot in SLOTS:
+        device = resolve_slot(state.slots.get(slot), graph, own)
+        slots[slot] = {"value": state.slots.get(slot), "device": device,
+                       "description": _description(graph, device)}
+    return {
+        "slots": slots,
+        "channels": [{"key": c.key, "label": c.label, "sink": c.sink,
+                      "fx": state.channels[c.key].fx, "outputs": state.channels[c.key].outputs,
+                      "bass": state.channels[c.key].bass, "treble": state.channels[c.key].treble}
+                     for c in channels],
+        "fx_outputs": state.fx_outputs,
+        "mic": {"value": state.mic, "device": pick_mic(state, graph, own)},
+    }
+
+
+def devices_list(channels, graph):
+    own = own_nodes(channels)
+    return ([{"kind": "output", "name": n, "description": _description(graph, n)}
+             for n in hardware_outputs(graph, own)]
+            + [{"kind": "mic", "name": n, "description": _description(graph, n)}
+               for n in hardware_mics(graph, own)])
+
+
+def _print_status(st):
+    def slot_text(slot):
+        info = st["slots"][slot]
+        if info["value"] is None:
+            return f"{slot} off"
+        where = "default output" if info["value"] == DEFAULT_OUTPUT else info["value"]
+        return f"{slot} {where} ({info['description'] or 'not connected'})"
+
+    print("Outputs:     " + "\n             ".join(slot_text(s) for s in SLOTS))
+    for c in st["channels"]:
+        dest = "EasyEffects" if c["fx"] else (", ".join(c["outputs"]) or "nowhere")
+        print(f"{c['label']:12s} FX {'on ' if c['fx'] else 'off'}  -> {dest:20s}"
+              f" bass {c['bass']:+5.1f}  treble {c['treble']:+5.1f}")
+    print(f"{'EasyEffects':12s}         -> {', '.join(st['fx_outputs']) or 'nowhere'}")
+    mic = st["mic"]
+    print(f"{'Mic':12s} {'auto' if mic['value'] == AUTO_MIC else 'pinned'} -> {mic['device'] or 'none present'}")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return 0
+    channels = load_channels()
+    if argv[0] in ("status", "devices"):
+        graph = read_graph()
+        data = (status_dict(channels, load_state(channels), graph) if argv[0] == "status"
+                else devices_list(channels, graph))
+        if "--json" in argv:
+            print(json.dumps(data, indent=2))
+        elif argv[0] == "status":
+            _print_status(data)
+        else:
+            for d in data:
+                print(f"{d['kind']:7s} {d['name']}  ({d['description']})")
+        return 0
+    try:
+        state = apply_command(argv, channels, load_state(channels))
+    except ValueError as e:
+        print(f"audio-mixer: {e}", file=sys.stderr)
+        return 2
+    save_state(state)
+    graph = read_graph()
+    reconcile_once(graph)
+    if argv[0] == "eq":
+        apply_eq(graph, channels, state)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

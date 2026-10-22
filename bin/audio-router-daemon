@@ -58,9 +58,11 @@ ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
 VOL_FILE = os.path.expanduser("~/.config/audio-mixer/volumes.json")
 APPLY_CMD = os.path.expanduser("~/.local/bin/audio-routes-apply")
 
-# Set true once saved volumes have been restored at startup, so the periodic
-# snapshot never overwrites the saved file with the boot-time 100% defaults.
-volumes_ready = False
+# Node ids of the volume targets as last seen, and how many more passes should
+# restore (not save) volumes. Nodes (re)created at login or by a PipeWire
+# restart come up at 100%; saving then would overwrite the user's levels.
+vol_ids_seen = None
+restores_left = 0
 
 
 # Read once at startup; audio-routes-apply restarts us when the list changes.
@@ -263,17 +265,16 @@ eq_seen = None
 patch_lock = threading.Lock()
 
 
-def patch():
+def patch(graph=None):
     """One patchbay pass: relink whatever drifted, and re-apply Bass/Treble
     when the channel nodes are new (PipeWire restarted) or mixer.json changed.
     Idempotent and quiet when nothing changed."""
     with patch_lock:
-        _patch()
+        _patch(graph if graph is not None else read_graph())
 
 
-def _patch():
+def _patch(graph):
     global eq_seen
-    graph = read_graph()
     if not graph.nodes:
         return  # PipeWire not reachable right now
     try:
@@ -337,11 +338,11 @@ def save_volumes():
     os.replace(tmp, VOL_FILE)
 
 
-def restore_volumes(path=VOL_FILE, targets=None):
+def restore_volumes(path=None, targets=None):
     """Re-apply the saved volumes (no-op on first ever run)."""
     kinds = dict(VOLUME_TARGETS if targets is None else targets)
     try:
-        with open(path) as f:
+        with open(path or VOL_FILE) as f:
             vols = json.load(f)
     except Exception:
         return
@@ -349,6 +350,24 @@ def restore_volumes(path=VOL_FILE, targets=None):
         if name in kinds:
             subprocess.run(["pactl", f"set-{kinds[name]}-volume", name, str(int(raw))],
                            capture_output=True, text=True)
+
+
+def volume_tick(graph):
+    """One volume pass. When the targets were just (re)created — login or a
+    PipeWire restart — re-apply the saved levels on this pass and the next (to
+    win against WirePlumber's own restore) instead of saving the fresh 100%s;
+    otherwise save any change. Does nothing until every target exists."""
+    global vol_ids_seen, restores_left
+    ids = {name: graph.nodes[name].id for name, _ in VOLUME_TARGETS if name in graph.nodes}
+    if len(ids) < len(VOLUME_TARGETS):
+        return
+    if ids != vol_ids_seen:
+        vol_ids_seen, restores_left = ids, 2
+    if restores_left:
+        restore_volumes()
+        restores_left -= 1
+    else:
+        save_volumes()
 
 
 def wait_for_channels(timeout=30):
@@ -416,17 +435,11 @@ def main():
 
     time.sleep(2)  # let PipeWire settle on login
 
-    # Re-apply saved per-channel volumes once the channels exist. WirePlumber's
-    # own restore runs at WirePlumber startup (before we get here) and leaves
-    # these loopback sinks at 100%, so by now it's safe to overwrite it. Applied
-    # twice a few seconds apart to win any lingering race, then we mark volumes
-    # ready so the snapshot loop may begin saving.
-    global volumes_ready
+    # Saved volumes go back as soon as the channels exist (volume_tick restores
+    # on this pass and the next, then starts saving changes; it does the same
+    # after every PipeWire restart).
     wait_for_channels()
-    restore_volumes()
-    time.sleep(3)
-    restore_volumes()
-    volumes_ready = True
+    volume_tick(read_graph())
 
     # Keep the mixer wired even when EasyEffects or a device comes and goes.
     # patch() is idempotent (it only touches links that drifted), so polling it
@@ -437,14 +450,11 @@ def main():
         while True:
             time.sleep(CHAIN_POLL_SECONDS)
             try:
-                patch()
+                graph = read_graph()
+                patch(graph)
+                volume_tick(graph)
             except Exception:
                 pass
-            if volumes_ready:
-                try:
-                    save_volumes()
-                except Exception:
-                    pass
     threading.Thread(target=chain_watch, daemon=True).start()
 
     # Outer loop keeps us alive across pipewire-pulse restarts: `pactl subscribe`

@@ -4,6 +4,7 @@ from audiomixer.config import Channel, ChannelState, MixerState
 from audiomixer.pwgraph import parse_dump
 from audiomixer.routing import (
     desired_links, managed_nodes, own_nodes, pick_mic, port_pairs, resolve_slot,
+    unpairable_routes,
 )
 
 from tests.pwfake import DumpBuilder
@@ -146,6 +147,16 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(pick_mic(state(mic=PCI_MIC), graph()), PCI_MIC)
         self.assertIsNone(pick_mic(state(mic=USB_MIC), graph(usb_mic=False)))
         self.assertIsNone(pick_mic(state(mic="easyeffects_source"), graph()))
+
+    def test_a_wanted_route_whose_ports_cannot_pair_is_reported(self):
+        # EE_Return_out once had ports output_1/output_2 with channel UNK:
+        # nothing paired, no link was wanted, and the strip went silent unnoticed.
+        def unknown_channels(b):
+            b.add("EE_Return_out_unk", "Stream/Output/Audio", outs=("output_1", "output_2"))
+        g = graph(extra=unknown_channels)
+        g.ports["EE_Return_out"] = g.ports.pop("EE_Return_out_unk")
+        self.assertIn(("EE_Return_out", SPEAKERS), unpairable_routes(CHS, state(), g))
+        self.assertEqual(unpairable_routes(CHS, state(), graph()), [])
 
     def test_managed_nodes_are_the_ones_whose_links_we_own(self):
         self.assertEqual(managed_nodes(CHS), {"Default_Audio_out", "Discord_Audio_out", "Music_Audio_out",

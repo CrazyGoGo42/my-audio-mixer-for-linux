@@ -45,6 +45,36 @@ separate. It's taken before EasyEffects (so your speaker EQ isn't baked into a
 stream) and doesn't include your mic. Don't use it as your Discord mic: it
 contains the Discord channel, so people would hear themselves.
 
+### Effects, outputs and your mic
+
+Like VoiceMeeter's strips and A1/A2 buttons, controlled with `audio-mixer`
+(the mixer window, coming next, uses the same settings):
+
+- **FX per channel** — on: the channel goes through your EasyEffects preset;
+  off: it plays dry. All on by default, which sounds exactly like before.
+- **EasyEffects is a strip of its own** with its own volume (pavucontrol:
+  "EasyEffects") and outputs. FX-on channels play wherever it plays.
+- **Outputs A1–A4** — each slot is a device you pick, or "default output"
+  (follows your headset when you plug it in). FX-off channels choose their own.
+- **Bass / Treble per channel**, ±12 dB, independent of FX.
+- **Mic** — EasyEffects listens to the "Mixer Mic", which only ever gets a
+  real microphone (your USB headset mic when it's plugged in, else the built-in
+  one), and apps' default mic is EasyEffects' processed output. Your speakers
+  can't end up in your mic.
+
+```bash
+audio-mixer status                 # what goes where
+audio-mixer devices                # outputs and mics you can pick
+audio-mixer fx browser off         # Browser plays dry
+audio-mixer slot A2 alsa_output.usb-…   # A2 = the headset
+audio-mixer out browser A2 on      # Browser also plays on A2
+audio-mixer out fx A2 on           # EasyEffects strip also plays on A2
+audio-mixer eq music bass 6        # +6 dB bass on Music
+audio-mixer mic auto               # or a device name from `devices`
+```
+
+Settings live in `~/.config/audio-mixer/mixer.json` (backed up daily).
+
 ## How routing works
 
 ```
@@ -137,7 +167,8 @@ and your backup folder are left alone.
 | `audio-routes-apply`    | Builds the channel sinks + pipewire-pulse routing rules from the two above |
 | `audio-channel-control` | Adjusts per-channel volume/mute (the hotkeys call this)                  |
 | `audio-osd`             | Persistent GTK overlay showing the channel + volume on each keypress     |
-| `audio-router-daemon`   | Prompts for unknown apps; keeps the EasyEffects chain wired; restores channel volumes at login. No notifs. |
+| `audio-mixer`           | FX, output slots, Bass/Treble and mic (writes `mixer.json`)              |
+| `audio-router-daemon`   | Prompts for unknown apps; the patchbay that links everything as `mixer.json` says; restores volumes at login. No notifs. |
 | `audio-route-apps`      | One-shot: move currently-playing apps onto their channel                 |
 | `easyeffects-watchdog`  | Restarts EasyEffects if it dies or hangs                                 |
 | `audio-mixer-backup`    | Daily backup / restore of your settings (see above)                      |
@@ -148,12 +179,13 @@ and your backup folder are left alone.
   Discord        Spotify        Chrome      games, (new app?)
      │              │              │                │
      ▼              ▼              ▼                ▼
- Discord_Audio  Music_Audio   Browser_Audio    Default_Audio   ← per-channel volume
-     └──────────────┴──────────────┴────────────────┘             (Desktop)
-                            ▼
-                     easyeffects_sink → EasyEffects → Speakers / Headset
-                            │
-                            └──► All Audio (input for OBS / recorders)
+ Discord_Audio  Music_Audio   Browser_Audio    Default_Audio   ← volume + Bass/Treble
+     │              │              │                │            (Desktop)
+     ├── FX on ──► easyeffects_sink → EasyEffects → EE_Return ──► its A1–A4
+     ├── FX off ─► the channel's own A1–A4 (speakers, headset, HDMI…)
+     └── always ─► All Audio (input for OBS / recorders)
+
+  real mic ──► Mixer Mic ──► EasyEffects (input effects) ──► apps' default mic
 ```
 
 ## Customization

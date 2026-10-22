@@ -65,5 +65,84 @@ class DaemonHelpersTest(unittest.TestCase):
                                  ["set-sink-volume Music_Audio 9830", "set-source-volume Mic_In 45000"])
 
 
+class VolumeTickTest(unittest.TestCase):
+    """A PipeWire restart recreates the nodes at 100%. The daemon must put the
+    saved levels back, never save the 100%s over them (seen live 2026-10-23)."""
+
+    SAVED = {"Default_Audio": 22937, "Music_Audio": 16384, "EE_Return": 65536,
+             "Mic_In": 50000, "All_Audio": 65536}
+
+    def setUp(self):
+        self.d = load_daemon()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.log = os.path.join(self.tmp.name, "calls")
+        fake = os.path.join(self.tmp.name, "pactl")
+        with open(fake, "w") as f:  # every node reports a fresh 100%
+            f.write(f'#!/bin/sh\necho "$*" >> {self.log}\n'
+                    'case "$1" in get-*) echo "Volume: front-left: 65536 / 100% / 0.00 dB";; esac\n')
+        os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = self.tmp.name + os.pathsep + old
+        self.addCleanup(lambda: os.environ.__setitem__("PATH", old))
+        self.d.VOL_FILE = os.path.join(self.tmp.name, "volumes.json")
+        self.write_saved()
+        self.d.VOLUME_TARGETS = self.d.volume_targets(CHS)
+
+    def write_saved(self):
+        with open(self.d.VOL_FILE, "w") as f:
+            json.dump(self.SAVED, f)
+
+    def saved(self):
+        with open(self.d.VOL_FILE) as f:
+            return json.load(f)
+
+    def calls(self):
+        """Commands run since the last call (none ran = no log file yet)."""
+        try:
+            with open(self.log) as f:
+                lines = f.read().splitlines()
+        except FileNotFoundError:
+            return []
+        open(self.log, "w").close()
+        return lines
+
+    def graph(self, shift=0):
+        from audiomixer.pwgraph import parse_dump
+        from tests.pwfake import DumpBuilder
+        b = DumpBuilder()
+        for i in range(shift):
+            b.add(f"filler{i}", "Audio/Sink")
+        for name, _ in self.d.VOLUME_TARGETS:
+            b.add(name, "Audio/Sink")
+        return parse_dump(b.dump())
+
+    def test_fresh_nodes_get_saved_volumes_twice_then_changes_are_saved(self):
+        g = self.graph()
+        self.d.volume_tick(g)
+        self.assertIn("set-sink-volume Music_Audio 16384", self.calls())
+        self.d.volume_tick(g)
+        self.assertIn("set-source-volume Mic_In 50000", self.calls())
+        self.assertEqual(self.saved(), self.SAVED)  # nothing saved while restoring
+        self.d.volume_tick(g)                       # settled: now changes are saved
+        self.assertEqual(self.saved()["Music_Audio"], 65536)
+
+    def test_pipewire_restart_restores_instead_of_saving_100_percent(self):
+        for _ in range(3):
+            self.d.volume_tick(self.graph())
+        self.write_saved()
+        self.calls()
+        self.d.volume_tick(self.graph(shift=3))     # same names, new node ids
+        self.assertIn("set-sink-volume Default_Audio 22937", self.calls())
+        self.assertEqual(self.saved(), self.SAVED)
+
+    def test_nothing_happens_until_every_target_exists(self):
+        g = self.graph()
+        del g.nodes["Mic_In"]
+        self.d.volume_tick(g)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.saved(), self.SAVED)
+
+
 if __name__ == "__main__":
     unittest.main()

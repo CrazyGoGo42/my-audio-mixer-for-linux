@@ -29,7 +29,7 @@ MIXER_DIR="$HOME/.config/audio-mixer"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 AUTOSTART_DIR="$HOME/.config/autostart"
 EE_APP=com.github.wwmm.easyeffects
-SCRIPTS="audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog audio-mixer-backup"
+SCRIPTS="audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog audio-mixer-backup audio-mixer"
 
 RESTORE_DIR=""
 case "$1" in
@@ -149,6 +149,18 @@ for f in channels.conf routes.json; do
         ok "Default $f installed"
     fi
 done
+# Mixer settings (FX, output slots, Bass/Treble, mic). The defaults sound
+# exactly like the setup before these existed: every channel through
+# EasyEffects to the default output.
+if [ ! -f "$MIXER_DIR/mixer.json" ]; then
+    python3 - "$LIB_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from audiomixer.config import load_channels, load_state, save_state
+save_state(load_state(load_channels()))
+PY
+    ok "Default mixer settings created"
+fi
 # Sink names of every channel, one per line.
 channel_sinks() { awk '{ sub(/#.*/, "") } NF >= 6 { print $2 }' "$MIXER_DIR/channels.conf"; }
 
@@ -286,6 +298,26 @@ if flatpak info "$EE_APP" &>/dev/null && ! pgrep -f 'easyeffects --service-mode'
     ok "EasyEffects started"
 fi
 
+# ---------- Point EasyEffects at the mixer ----------
+# EasyEffects listens to the Mixer Mic (only ever fed by a real microphone, so
+# speakers can't leak into your mic) and plays into the EasyEffects strip.
+if flatpak info "$EE_APP" &>/dev/null; then
+    if python3 - "$LIB_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from audiomixer.easyeffects import point_at_mixer
+sys.exit(0 if point_at_mixer() else 1)
+PY
+    then ok "EasyEffects now uses the Mixer Mic and the EasyEffects strip"
+    else ok "EasyEffects already uses the Mixer Mic and the EasyEffects strip"
+    fi
+    # Apps' default mic = your real mic with your EasyEffects input effects.
+    for _ in $(seq 20); do
+        pactl set-default-source easyeffects_source 2>/dev/null && break
+        sleep 0.5
+    done
+fi
+
 # ---------- GNOME keybindings ----------
 if [ -z "$SKIP_KEYBINDINGS" ]; then
     info "Setting up keyboard shortcuts..."
@@ -387,5 +419,6 @@ echo ""
 echo "  Commands:  audio-route-apps     move playing apps onto their channel now"
 echo "             audio-routes-apply   apply changes to channels.conf / routes.json"
 echo "             audio-mixer-backup   back up now (--restore to put one back)"
+echo "             audio-mixer          FX, outputs A1-A4, Bass/Treble, mic (--help)"
 echo "             pavucontrol          GUI for manual tweaks"
 echo ""

@@ -63,6 +63,16 @@ class RenderSinksTest(unittest.TestCase):
             self.assertIsNotNone(props, name)
             self.assertIn("node.autoconnect = false", props.group(0), name)
 
+    def test_every_stream_we_link_declares_its_channel_positions(self):
+        # The patchbay pairs ports by channel (FL->FL). A loopback side without
+        # audio.position gets ports named output_1/output_2 with channel UNK,
+        # which nothing matches: that left the EasyEffects strip silent.
+        for name in ("EE_Return_out", "Mic_In_in", "All_Audio_in"):
+            props = re.search(r'\{ node\.name = "' + name + r'"[^}]*\}', self.out).group(0)
+            self.assertIn("audio.position = [ FL FR ]", props, name)
+        for ch in CHS:  # filter-chain: the module-level position covers both sides
+            self.assertIn("audio.position = [ FL FR ]", self.module_for(ch.sink))
+
     def test_our_sinks_never_win_default_output(self):
         for name in ("Default_Audio", "Music_Audio", "EE_Return"):
             props = re.search(r'\{ node\.name = "' + name + r'" media\.class = "Audio/Sink"[^}]*\}', self.out)
