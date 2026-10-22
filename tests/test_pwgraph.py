@@ -1,0 +1,61 @@
+import unittest
+
+from audiomixer.pwgraph import Port, parse_dump
+
+from tests.pwfake import defaults, link, node, port
+
+
+class ParseDumpTest(unittest.TestCase):
+    def setUp(self):
+        self.dump = [
+            node(47, "Music_Audio_out", "Stream/Output/Audio"),
+            port(120, 47, "output_FL", "out", "FL"),
+            port(121, 47, "output_FR", "out", "FR"),
+            node(50, "easyeffects_sink", "Audio/Sink", {"node.description": "Easy Effects Sink"}),
+            port(79, 50, "playback_FL", "in", "FL"),
+            port(80, 50, "playback_FR", "in", "FR"),
+            port(81, 50, "monitor_FL", "out", "FL", monitor=True),
+            link(47, 120, 50, 79),
+            link(47, 121, 50, 80),
+            defaults("alsa_output.x", "easyeffects_source"),
+        ]
+        self.g = parse_dump(self.dump)
+
+    def test_ports_grouped_by_node_name_with_channel_and_direction(self):
+        self.assertEqual(self.g.ports["Music_Audio_out"], [
+            Port("Music_Audio_out", "output_FL", "out", "FL", False),
+            Port("Music_Audio_out", "output_FR", "out", "FR", False),
+        ])
+
+    def test_monitor_ports_are_marked(self):
+        self.assertIn(Port("easyeffects_sink", "monitor_FL", "out", "FL", True),
+                      self.g.ports["easyeffects_sink"])
+
+    def test_links_resolved_to_port_names(self):
+        self.assertEqual(self.g.links, {
+            ("Music_Audio_out:output_FL", "easyeffects_sink:playback_FL"),
+            ("Music_Audio_out:output_FR", "easyeffects_sink:playback_FR"),
+        })
+
+    def test_nodes_keep_id_class_and_props(self):
+        n = self.g.nodes["easyeffects_sink"]
+        self.assertEqual((n.id, n.media_class, n.props["node.description"]),
+                         (50, "Audio/Sink", "Easy Effects Sink"))
+
+    def test_default_sink_and_source_from_metadata(self):
+        self.assertEqual((self.g.default_sink, self.g.default_source),
+                         ("alsa_output.x", "easyeffects_source"))
+
+    def test_dangling_link_to_unknown_port_is_ignored(self):
+        g = parse_dump(self.dump + [link(47, 120, 777, 778)])
+        self.assertEqual(len(g.links), 2)
+
+    def test_empty_or_garbage_dump_gives_empty_graph(self):
+        for dump in ([], [{"type": "nonsense"}], [{"id": 1}], None, "junk"):
+            g = parse_dump(dump)
+            self.assertEqual((g.nodes, g.ports, g.links, g.default_sink, g.default_source),
+                             ({}, {}, set(), None, None))
+
+
+if __name__ == "__main__":
+    unittest.main()
