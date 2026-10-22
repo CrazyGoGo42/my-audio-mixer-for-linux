@@ -119,5 +119,60 @@ class StripTest(UiTestBase):
         self.assertFalse(browser.scale.get_sensitive())
 
 
+class RoutingControlsTest(UiTestBase):
+    def refresh_with(self, **kw):
+        self.status = status(**kw)
+        self.controller.refresh(status_too=True)
+
+    def test_fx_off_shows_slot_toggles(self):
+        self.refresh_with(fx={"music": False}, outputs={"music": ["A1", "A2"]})
+        music = self.strip("Music_Audio")
+        self.assertEqual(music.where.get_visible_child_name(), "slots")
+        self.assertEqual([t.get_active() for t in music.slot_toggles], [True, True, False, False])
+        self.assertFalse(music.fx.get_active())
+
+    def test_fx_on_shows_ee_label(self):
+        music = self.strip("Music_Audio")
+        self.assertTrue(music.fx.get_active())
+        self.assertEqual(music.where.get_visible_child_name(), "fx")
+
+    def test_refresh_never_echoes_commands(self):
+        self.refresh_with(fx={"music": False}, outputs={"music": ["A2"]})
+        self.assertEqual(self.commands, [])
+
+    def test_clicking_fx_and_slots_runs_commands(self):
+        music = self.strip("Music_Audio")
+        music.fx.set_active(False)
+        self.refresh_with(fx={"music": False})
+        music.slot_toggles[2].set_active(True)
+        self.assertEqual(self.commands, [["fx", "music", "off"], ["out", "music", "A3", "on"]])
+
+    def test_ee_strip_toggles_its_outputs_and_shows_preset(self):
+        ee = self.strip("EE_Return")
+        self.assertEqual([t.get_active() for t in ee.slot_toggles], [True, False, False, False])
+        self.assertIn("Bass Enhancing", ee.preset.get_label())
+        ee.slot_toggles[1].set_active(True)
+        self.assertEqual(self.commands, [["out", "fx", "A2", "on"]])
+
+    def test_eq_change_runs_eq_command(self):
+        music = self.strip("Music_Audio")
+        music.bass.set_value(6)
+        music.flush_eq()
+        self.assertEqual(self.commands, [["eq", "music", "bass", "6.0"]])
+
+    def test_slot_menu_lists_default_devices_and_none(self):
+        a2 = self.win.slot_buttons["A2"]
+        self.assertTrue(a2.get_label().startswith("A2"))
+        self.assertEqual([text for text, _ in a2.items], ["Default output", "Speakers", "HDMI", "Off"])
+        dict(a2.items)["HDMI"]()
+        self.assertEqual(self.commands, [["slot", "A2", HDMI]])
+
+    def test_mic_menu_lists_auto_and_real_mics(self):
+        mic = self.strip("Mic_In")
+        self.assertEqual([text for text, _ in mic.menu.items], ["Automatic", "Blue mic"])
+        dict(mic.menu.items)["Automatic"]()
+        self.assertEqual(self.commands, [["mic", "auto"]])
+
+
 if __name__ == "__main__":
     unittest.main()

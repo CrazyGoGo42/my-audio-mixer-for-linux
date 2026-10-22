@@ -51,11 +51,15 @@ def main():
         win.present()
         shot = os.environ.get("AUDIO_MIXER_SNAPSHOT")
         if shot:
+            tries = [0]
+
             def snap():
-                save_png(win, shot)
+                tries[0] += 1
+                if not save_png(win, shot) and tries[0] < 25:
+                    return True  # mid-relayout: try again shortly
                 app.quit()
                 return False
-            GLib.timeout_add(1200, snap)
+            GLib.timeout_add(1200, lambda: GLib.timeout_add(200, snap) and False)
 
     app.connect("activate", activate)
     app.connect("shutdown", lambda app: [c.stop() for c in controllers])
