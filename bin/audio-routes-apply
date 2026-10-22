@@ -34,6 +34,7 @@ for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "li
     if os.path.isdir(os.path.join(_lib, "audiomixer")):
         sys.path.insert(0, _lib)
         break
+from audiomixer import easyeffects  # noqa: E402
 from audiomixer.config import (  # noqa: E402
     CHANNELS_FILE, EE_SINK, catch_all, load_channels, load_state,
 )
@@ -47,7 +48,6 @@ SINKS_FILE = os.path.expanduser("~/.config/pipewire/pipewire.conf.d/virtual-sink
 OUT_FILE = os.path.expanduser(
     "~/.config/pipewire/pipewire-pulse.conf.d/50-audio-mixer-routing.conf"
 )
-EE_APP = "com.github.wwmm.easyeffects"
 # pipewire-pulse property names for each match field in routes.json
 FIELD_PROP = {
     "binary": "application.process.binary",
@@ -98,11 +98,6 @@ def systemctl(*args):
     subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True)
 
 
-def easyeffects_running():
-    return subprocess.run(["pgrep", "-f", "easyeffects --service-mode"],
-                          capture_output=True).returncode == 0
-
-
 def wiring_problems(channels):
     """What's still not wired as wanted, as short readable lines."""
     graph = read_graph()
@@ -123,29 +118,16 @@ def restart_pipewire(channels):
     Always restart all three services together. Restarting WirePlumber alone
     drops every link in the graph and nothing gets relinked (PipeWire 1.0 /
     WirePlumber 0.4)."""
-    ee_was_running = easyeffects_running()
+    ee_was_running = easyeffects.is_running()
     if ee_was_running:
-        try:
-            subprocess.run(["flatpak", "run", EE_APP, "-q"],
-                           capture_output=True, timeout=10)
-        except Exception:
-            subprocess.run(["pkill", "-f", "easyeffects --service-mode"],
-                           capture_output=True)
+        easyeffects.quit()
     systemctl("restart", "pipewire", "pipewire-pulse", "wireplumber")
     # Give the nodes time to settle before EasyEffects' sink appears. With the
     # old WirePlumber-linked channels, relaunching after only 2s once left a
     # channel's output in an error state with no links; waiting 8s avoided it.
     time.sleep(8)
     if ee_was_running:
-        lockdir = f"/run/user/{os.getuid()}/.flatpak/{EE_APP}/tmp"
-        for name in ("EasyEffectsServer", "easyeffects.lock"):
-            try:
-                os.unlink(os.path.join(lockdir, name))
-            except OSError:
-                pass
-        subprocess.Popen(["flatpak", "run", EE_APP, "--service-mode", "--hide-window"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+        easyeffects.launch()
     # Wire everything now rather than waiting for the daemon's next pass, then
     # say so if something didn't make it, rather than leaving it silently dead.
     deadline = time.time() + 15
