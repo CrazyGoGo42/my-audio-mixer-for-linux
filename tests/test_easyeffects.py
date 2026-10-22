@@ -1,10 +1,12 @@
 import os
 import stat
+import subprocess
 import tempfile
 import time
 import unittest
 
-from audiomixer.easyeffects import launch, point_at_mixer, set_devices
+from audiomixer import easyeffects
+from audiomixer.easyeffects import launch, point_at, point_at_mixer, set_devices
 
 # The user's real easyeffectsrc on 2026-10-23 (EasyEffects 8.3.0).
 REAL_RC = """\
@@ -88,7 +90,7 @@ class SetDevicesTest(unittest.TestCase):
         self.assertEqual(set_devices(once, "Mic_In", "EE_Return"), once)
 
 
-class FakeCommandsTest(unittest.TestCase):
+class _FakeCommandsBase(unittest.TestCase):
     """Real code, fake flatpak/pgrep/pkill on PATH that record their arguments."""
 
     def setUp(self):
@@ -99,7 +101,8 @@ class FakeCommandsTest(unittest.TestCase):
         bindir = os.path.join(self.dir.name, "bin")
         os.mkdir(bindir)
         scripts = {
-            "flatpak": f'echo "flatpak $*" >> {self.log}\n',
+            # -q makes the fake EasyEffects exit (pgrep stops finding it)
+            "flatpak": f'echo "flatpak $*" >> {self.log}\ncase "$*" in *" -q"*) rm -f {self.running_flag};; esac\n',
             "pkill": f'echo "pkill $*" >> {self.log}\n',
             "pgrep": f'[ -e {self.running_flag} ]\n',
         }
@@ -130,6 +133,7 @@ class FakeCommandsTest(unittest.TestCase):
                 return lines
             time.sleep(0.05)
 
+class FakeCommandsTest(_FakeCommandsBase):
     def test_launch_clears_stale_lock_and_starts_service_mode(self):
         for name in ("EasyEffectsServer", "easyeffects.lock"):
             open(os.path.join(self.lockdir, name), "w").close()
@@ -149,6 +153,80 @@ class FakeCommandsTest(unittest.TestCase):
         self.assertTrue(point_at_mixer(rc_file=self.rc, lockdir=self.lockdir))
         self.assertEqual(self.calls(expect=2), ["flatpak run com.github.wwmm.easyeffects -q",
                                         "flatpak run com.github.wwmm.easyeffects --service-mode --hide-window"])
+
+
+class StopBeforeWriteTest(_FakeCommandsBase):
+    """A fake EasyEffects that, like the real one, takes a moment to exit after
+    -q and writes its own settings back as it goes. Writing ours before it is
+    really gone gets them overwritten (review I2)."""
+
+    def setUp(self):
+        super().setUp()
+        bindir = os.path.join(self.dir.name, "bin")
+        self.pidfile = os.path.join(self.dir.name, "ee.pid")
+        snapshot = os.path.join(self.dir.name, "ee-memory")
+        with open(snapshot, "w") as f:
+            f.write(REAL_RC)   # what the running instance will write back on exit
+        # Detached (not our child), so once killed it's really gone instead of
+        # lingering as a zombie that `kill -0` still reports alive.
+        subprocess.run(["sh", "-c", f"sleep 30 >/dev/null 2>&1 & echo $! > {self.pidfile}"])
+        with open(self.pidfile) as f:
+            ee_pid = int(f.read())
+        self.addCleanup(lambda: subprocess.run(["kill", str(ee_pid)], capture_output=True))
+        scripts = {
+            "pgrep": f'kill -0 $(cat {self.pidfile}) 2>/dev/null\n',
+            # -q: exit after exit_delay s, writing settings back first. The
+            # helper stops early once the fake is gone (killed), so it never
+            # outlives the test.
+            "flatpak": (f'echo "flatpak $*" >> {self.log}\n'
+                        f'case "$*" in *" -q"*)\n'
+                        f'  ( i=0; while [ $i -lt {int(self.exit_delay * 10)} ]; do '
+                        f'kill -0 $(cat {self.pidfile}) 2>/dev/null || exit 0; sleep 0.1; i=$((i+1)); done; '
+                        f'cp {snapshot} {self.rc}; kill $(cat {self.pidfile}) ) >/dev/null 2>&1 &\n;; esac\n'),
+            "pkill": (f'echo "pkill $*" >> {self.log}\n'
+                      f'cp {snapshot} {self.rc}; kill $(cat {self.pidfile})\n'),
+        }
+        for name, body in scripts.items():
+            path = os.path.join(bindir, name)
+            with open(path, "w") as f:
+                f.write("#!/bin/sh\n" + body)
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+
+    exit_delay = 1.5
+
+    def rc_input_device(self):
+        """inputDevice once the fake EasyEffects has gone (and written back)."""
+        with open(self.pidfile) as f:
+            pid = int(f.read())
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.05)
+        time.sleep(0.2)
+        with open(self.rc) as f:
+            return section(f.read(), "StreamInputs")["inputDevice"]
+
+    def test_waits_for_easyeffects_to_exit_before_writing(self):
+        self.assertTrue(point_at_mixer(rc_file=self.rc, lockdir=self.lockdir))
+        self.assertEqual(self.rc_input_device(), "Mic_In")
+        self.assertEqual(self.calls(expect=2), ["flatpak run com.github.wwmm.easyeffects -q",
+                                                "flatpak run com.github.wwmm.easyeffects --service-mode --hide-window"])
+
+
+class StubbornEasyEffectsTest(StopBeforeWriteTest):
+    exit_delay = 1000  # -q never gets it to exit
+
+    def test_waits_for_easyeffects_to_exit_before_writing(self):
+        pass  # covered above
+
+    def test_kills_easyeffects_that_will_not_quit(self):
+        point_at(easyeffects.MIC_IN, easyeffects.EE_RETURN, rc_file=self.rc, lockdir=self.lockdir,
+                 quit_timeout=0.5)
+        self.assertIn("pkill -f easyeffects --service-mode", self.calls(expect=3))
+        self.assertEqual(self.rc_input_device(), "Mic_In")
 
 
 if __name__ == "__main__":

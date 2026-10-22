@@ -10,8 +10,10 @@ the defaults field by field, which sound exactly like the setup before output
 slots existed (every channel through EasyEffects to the default output).
 """
 
+import fcntl
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 
 MIXER_DIR = os.path.expanduser("~/.config/audio-mixer")
@@ -120,9 +122,29 @@ def load_state(channels, path=STATE_FILE):
     return MixerState(slots, states, _slot_list(data.get("fx_outputs"), ["A1"]), mic)
 
 
-def save_state(state, path=STATE_FILE):
+def update_state(channels, change, path=STATE_FILE):
+    """load -> change(state) -> save, holding a lock so two writers at once
+    (a hotkey and the window) can't lose each other's change."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(asdict(state), f, indent=2)
-    os.replace(tmp, path)
+    with open(path + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = change(load_state(channels, path))
+        save_state(state, path)
+    return state
+
+
+def save_state(state, path=STATE_FILE):
+    """Write atomically via a unique temp file, so readers never see half a
+    file and two writers never trip over each other's temp file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".mixer-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(asdict(state), f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

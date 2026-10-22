@@ -61,8 +61,8 @@ APPLY_CMD = os.path.expanduser("~/.local/bin/audio-routes-apply")
 # Node ids of the volume targets as last seen, and how many more passes should
 # restore (not save) volumes. Nodes (re)created at login or by a PipeWire
 # restart come up at 100%; saving then would overwrite the user's levels.
-vol_ids_seen = None
-restores_left = 0
+vol_ids_seen = {}   # node name -> node id whose saved volume was re-applied
+restores_left = {}  # node name -> restore passes still due
 
 
 # Read once at startup; audio-routes-apply restarts us when the list changes.
@@ -265,15 +265,20 @@ eq_seen = None
 patch_lock = threading.Lock()
 
 
-def patch(graph=None):
-    """One patchbay pass: relink whatever drifted, and re-apply Bass/Treble
-    when the channel nodes are new (PipeWire restarted) or mixer.json changed.
-    Idempotent and quiet when nothing changed."""
+def tick(graph=None):
+    """One daemon pass: volumes first, then links. Nodes that were just
+    (re)created come up at 100%, so their saved levels must be back before
+    anything links them — otherwise an unplanned PipeWire restart would play
+    them at full volume."""
     with patch_lock:
-        _patch(graph if graph is not None else read_graph())
+        graph = graph if graph is not None else read_graph()
+        volume_tick(graph)
+        _patch(graph)
 
 
 def _patch(graph):
+    """Relink whatever drifted, and re-apply Bass/Treble when the channel nodes
+    are new (PipeWire restarted) or mixer.json changed. Idempotent."""
     global eq_seen
     if not graph.nodes:
         return  # PipeWire not reachable right now
@@ -338,8 +343,8 @@ def save_volumes():
     os.replace(tmp, VOL_FILE)
 
 
-def restore_volumes(path=None, targets=None):
-    """Re-apply the saved volumes (no-op on first ever run)."""
+def restore_volumes(path=None, targets=None, names=None):
+    """Re-apply the saved volumes (no-op on first ever run); only `names` if given."""
     kinds = dict(VOLUME_TARGETS if targets is None else targets)
     try:
         with open(path or VOL_FILE) as f:
@@ -347,26 +352,28 @@ def restore_volumes(path=None, targets=None):
     except Exception:
         return
     for name, raw in vols.items():
-        if name in kinds:
+        if name in kinds and (names is None or name in names):
             subprocess.run(["pactl", f"set-{kinds[name]}-volume", name, str(int(raw))],
                            capture_output=True, text=True)
 
 
 def volume_tick(graph):
-    """One volume pass. When the targets were just (re)created — login or a
-    PipeWire restart — re-apply the saved levels on this pass and the next (to
-    win against WirePlumber's own restore) instead of saving the fresh 100%s;
-    otherwise save any change. Does nothing until every target exists."""
-    global vol_ids_seen, restores_left
+    """One volume pass. Any target that was just (re)created — login, a
+    PipeWire or EasyEffects restart — gets its saved level re-applied on this
+    pass and the next (to win against WirePlumber's own restore) instead of
+    having its fresh 100% saved. Once nothing is pending and every target
+    exists, changes are saved."""
     ids = {name: graph.nodes[name].id for name, _ in VOLUME_TARGETS if name in graph.nodes}
-    if len(ids) < len(VOLUME_TARGETS):
-        return
-    if ids != vol_ids_seen:
-        vol_ids_seen, restores_left = ids, 2
-    if restores_left:
-        restore_volumes()
-        restores_left -= 1
-    else:
+    for name, nid in ids.items():
+        if vol_ids_seen.get(name) != nid:
+            vol_ids_seen[name] = nid
+            restores_left[name] = 2
+    due = {name for name in ids if restores_left.get(name)}
+    if due:
+        restore_volumes(names=due)
+        for name in due:
+            restores_left[name] -= 1
+    elif len(ids) == len(VOLUME_TARGETS):
         save_volumes()
 
 
@@ -439,10 +446,10 @@ def main():
     # on this pass and the next, then starts saving changes; it does the same
     # after every PipeWire restart).
     wait_for_channels()
-    volume_tick(read_graph())
+    tick()
 
     # Keep the mixer wired even when EasyEffects or a device comes and goes.
-    # patch() is idempotent (it only touches links that drifted), so polling it
+    # tick() is idempotent (it only touches links that drifted), so polling it
     # is quiet and self-healing, and it sidesteps the timing races of reacting
     # to individual graph events. The same poll snapshots volumes so the latest
     # levels survive the next reboot.
@@ -450,9 +457,7 @@ def main():
         while True:
             time.sleep(CHAIN_POLL_SECONDS)
             try:
-                graph = read_graph()
-                patch(graph)
-                volume_tick(graph)
+                tick()
             except Exception:
                 pass
     threading.Thread(target=chain_watch, daemon=True).start()
@@ -461,7 +466,7 @@ def main():
     # ends when pulse restarts, so we re-settle, re-wire the chain, rescan, and
     # resubscribe instead of dying.
     while True:
-        patch()
+        tick()
         routes = load_routes()
         for stream in list_streams():
             consider(stream, routes)
@@ -480,7 +485,7 @@ def main():
             elif "source-output" not in line and ("sink" in line or "source" in line):
                 # A device, EasyEffects or one of our nodes came or went: rewire.
                 time.sleep(0.5)
-                patch()
+                tick()
 
         # Subscription ended — pulse restarted or crashed. Reconnect after a beat.
         try:

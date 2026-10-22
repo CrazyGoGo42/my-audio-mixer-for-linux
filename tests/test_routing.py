@@ -37,11 +37,13 @@ def graph(ee=True, usb_mic=True, default_sink=SPEAKERS, extra=None):
     b.add("All_Audio_in", "Stream/Input/Audio", ins=("input_FL", "input_FR"))
     b.add("All_Audio", "Audio/Source", outs=("capture_FL", "capture_FR"), props={"node.virtual": True})
     b.add(SPEAKERS, "Audio/Sink", ins=("playback_FL", "playback_FR", "playback_RL", "playback_RR"),
-          monitors=("monitor_FL", "monitor_FR"), props={"device.api": "alsa"})
-    b.add(HDMI, "Audio/Sink", ins=("playback_FL", "playback_FR"), props={"device.api": "alsa"})
+          monitors=("monitor_FL", "monitor_FR"), props={"device.api": "alsa", "priority.session": 1009})
+    b.add(HDMI, "Audio/Sink", ins=("playback_FL", "playback_FR"),
+          props={"device.api": "alsa", "priority.session": 704})
     b.add(PCI_MIC, "Audio/Source", outs=("capture_FL", "capture_FR"), props={"device.api": "alsa"})
     if usb_mic:
-        b.add(HEADSET, "Audio/Sink", ins=("playback_FL", "playback_FR"), props={"device.api": "alsa"})
+        b.add(HEADSET, "Audio/Sink", ins=("playback_FL", "playback_FR"),
+              props={"device.api": "alsa", "priority.session": 1000})
         b.add(USB_MIC, "Audio/Source", outs=("capture_MONO",), props={"device.api": "alsa"})
     if extra:
         extra(b)
@@ -108,14 +110,25 @@ class RoutingTest(unittest.TestCase):
         s = state(slots={"A1": HEADSET, "A2": None, "A3": None, "A4": None})
         self.assertEqual(from_node(desired_links(CHS, s, graph(usb_mic=False)), "EE_Return_out"), set())
 
-    def test_default_sink_pointing_at_our_node_links_nothing(self):
+    def test_default_pointing_at_our_own_node_falls_back_to_real_hardware(self):
+        # WirePlumber can pick one of our sinks as the default output (it's in
+        # its history on this machine). Linking into it would loop; going silent
+        # isn't what anyone expects (review I1): use the best real output.
         own = own_nodes(CHS)
-        self.assertIsNone(resolve_slot("@default", graph(default_sink="Default_Audio"), own))
-        self.assertIsNone(resolve_slot("@default", graph(default_sink="EE_Return"), own))
+        for bad_default in ("Default_Audio", "EE_Return", "easyeffects_sink", "gone_device", None):
+            self.assertEqual(resolve_slot("@default", graph(default_sink=bad_default), own), SPEAKERS,
+                             bad_default)
+        self.assertEqual(from_node(desired_links(CHS, state(), graph(default_sink="Music_Audio")),
+                                   "EE_Return_out"), pair("EE_Return_out", SPEAKERS))
+
+    def test_default_with_no_hardware_at_all_is_silent(self):
+        g = graph(default_sink="Default_Audio")
+        for name in (SPEAKERS, HDMI, HEADSET):
+            g.nodes.pop(name, None)
+        self.assertIsNone(resolve_slot("@default", g, own_nodes(CHS)))
 
     def test_slot_never_resolves_to_easyeffects_sink(self):
         # EasyEffects' output would come straight back into it: a feedback loop.
-        self.assertIsNone(resolve_slot("@default", graph(default_sink="easyeffects_sink"), own_nodes(CHS)))
         self.assertIsNone(resolve_slot("easyeffects_sink", graph(), own_nodes(CHS)))
 
     def test_slot_must_name_a_sink(self):

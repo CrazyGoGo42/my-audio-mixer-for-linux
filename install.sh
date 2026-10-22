@@ -288,19 +288,12 @@ systemctl --user restart audio-osd.service audio-router-daemon.service easyeffec
 systemctl --user start audio-mixer-backup.timer
 ok "Services enabled and started (auto-start on login, daily backup)"
 
-# ---------- Start EasyEffects ----------
-# On a fresh install it has never run, so its sink doesn't exist yet. Clear any
-# stale single-instance lock first — it makes a new launch exit silently.
-if flatpak info "$EE_APP" &>/dev/null && ! pgrep -f 'easyeffects --service-mode' >/dev/null; then
-    LOCKDIR="/run/user/$(id -u)/.flatpak/$EE_APP/tmp"
-    rm -f "$LOCKDIR/EasyEffectsServer" "$LOCKDIR/easyeffects.lock"
-    setsid -f flatpak run "$EE_APP" --service-mode --hide-window >/dev/null 2>&1
-    ok "EasyEffects started"
-fi
-
-# ---------- Point EasyEffects at the mixer ----------
+# ---------- Point EasyEffects at the mixer, then start it ----------
 # EasyEffects listens to the Mixer Mic (only ever fed by a real microphone, so
 # speakers can't leak into your mic) and plays into the EasyEffects strip.
+# Pointed *before* it's started: on a fresh install it then starts with the
+# right devices instead of being quit mid-start. A running one is stopped,
+# waited for (it writes its settings back on exit) and relaunched.
 if flatpak info "$EE_APP" &>/dev/null; then
     if python3 - "$LIB_DIR" <<'PY'
 import sys
@@ -310,6 +303,14 @@ sys.exit(0 if point_at_mixer() else 1)
 PY
     then ok "EasyEffects now uses the Mixer Mic and the EasyEffects strip"
     else ok "EasyEffects already uses the Mixer Mic and the EasyEffects strip"
+    fi
+    # On a fresh install it has never run, so its sink doesn't exist yet. Clear
+    # any stale single-instance lock first — it makes a new launch exit silently.
+    if ! pgrep -f 'easyeffects --service-mode' >/dev/null; then
+        LOCKDIR="/run/user/$(id -u)/.flatpak/$EE_APP/tmp"
+        rm -f "$LOCKDIR/EasyEffectsServer" "$LOCKDIR/easyeffects.lock"
+        setsid -f flatpak run "$EE_APP" --service-mode --hide-window >/dev/null 2>&1
+        ok "EasyEffects started"
     fi
     # Apps' default mic = your real mic with your EasyEffects input effects.
     for _ in $(seq 20); do

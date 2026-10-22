@@ -122,7 +122,7 @@ def restart_pipewire(channels):
     WirePlumber 0.4)."""
     ee_was_running = easyeffects.is_running()
     if ee_was_running:
-        easyeffects.quit()
+        easyeffects.stop()
     # The daemon must not see the restart: the new nodes come up at 100%, and
     # it has to restore the saved levels *before* anything links them, which
     # it does when it starts. So stop it now and start it afterwards.

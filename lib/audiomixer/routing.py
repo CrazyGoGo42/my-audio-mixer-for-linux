@@ -33,13 +33,25 @@ def managed_nodes(channels):
     return {ch.sink + "_out" for ch in channels} | {EE_RETURN_OUT, MIC_IN_IN, ALL_IN}
 
 
-def resolve_slot(value, graph, own):
-    """The output device a slot plays on right now, or None (silent)."""
-    name = graph.default_sink if value == DEFAULT_OUTPUT else value
+def _usable_sink(name, graph, own):
     node = graph.nodes.get(name) if name else None
-    if node is None or node.media_class != "Audio/Sink" or name in own or name == EE_SINK:
-        return None
-    return name
+    return (node is not None and node.media_class == "Audio/Sink"
+            and name not in own and name != EE_SINK)
+
+
+def resolve_slot(value, graph, own):
+    """The output device a slot plays on right now, or None (silent).
+
+    "@default" follows the default output — unless that is one of our own
+    nodes or EasyEffects' sink (WirePlumber can pick those; linking into them
+    would loop), or missing: then the best real output plays instead."""
+    if value == DEFAULT_OUTPUT:
+        if _usable_sink(graph.default_sink, graph, own):
+            return graph.default_sink
+        outputs = sorted(hardware_outputs(graph, own),
+                         key=lambda n: (-int(graph.nodes[n].props.get("priority.session") or 0), n))
+        return outputs[0] if outputs else None
+    return value if _usable_sink(value, graph, own) else None
 
 
 def _hardware(graph, media_class, own):

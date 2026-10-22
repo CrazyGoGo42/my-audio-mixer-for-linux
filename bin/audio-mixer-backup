@@ -73,9 +73,14 @@ restore() {
     if [ -d "$dir/easyeffects" ]; then
         if pgrep -f 'easyeffects --service-mode' >/dev/null; then
             ee_was_running=1
-            timeout 10 flatpak run "$EE_APP" -q >/dev/null 2>&1 \
-                || pkill -f 'easyeffects --service-mode'
-            sleep 1
+            timeout 10 flatpak run "$EE_APP" -q >/dev/null 2>&1
+            # Wait until it's really gone — it writes its settings back as it
+            # exits and would overwrite what we restore — killing it if needed.
+            for _ in $(seq 50); do pgrep -f 'easyeffects --service-mode' >/dev/null || break; sleep 0.2; done
+            if pgrep -f 'easyeffects --service-mode' >/dev/null; then
+                pkill -f 'easyeffects --service-mode'
+                for _ in $(seq 25); do pgrep -f 'easyeffects --service-mode' >/dev/null || break; sleep 0.2; done
+            fi
         fi
         [ -d "$dir/easyeffects/config" ] && copy "$dir/easyeffects/config/" "$EE_CONFIG/"
         [ -d "$dir/easyeffects/data" ] && copy "$dir/easyeffects/data/" "$EE_DATA/"

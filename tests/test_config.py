@@ -1,10 +1,12 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
 
 from audiomixer.config import (
     ChannelState, MixerState, catch_all, load_channels, load_state, save_state,
+    update_state,
 )
 
 CHANNELS_CONF = """\
@@ -115,6 +117,56 @@ class ConfigTest(unittest.TestCase):
         again = load_state(self.chs, self.state_path)
         self.assertEqual(again, s)
         self.assertFalse(os.path.exists(self.state_path + ".tmp"))
+
+
+class ConcurrentStateTest(unittest.TestCase):
+    """Hotkeys and the window will run audio-mixer commands at the same time
+    (review I4): no crash, no half-written file, no lost change."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        path = os.path.join(self.dir.name, "channels.conf")
+        with open(path, "w") as f:
+            f.write(CHANNELS_CONF)
+        self.chs = load_channels(path)
+        self.state_path = os.path.join(self.dir.name, "mixer.json")
+
+    def run_threads(self, work, n=2):
+        errors = []
+
+        def wrapped(i):
+            try:
+                work(i)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+        threads = [threading.Thread(target=wrapped, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return errors
+
+    def test_concurrent_saves_never_crash_or_leave_temp_files(self):
+        state = load_state(self.chs, self.state_path)
+        errors = self.run_threads(lambda i: [save_state(state, self.state_path) for _ in range(200)], n=4)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(os.listdir(self.dir.name)), ["channels.conf", "mixer.json"])
+        with open(self.state_path) as f:
+            json.load(f)  # complete, valid JSON
+
+    def test_update_state_never_loses_a_change(self):
+        keys = ["music", "discord"]
+
+        def bump(i):
+            for _ in range(25):
+                def change(s):
+                    s.channels[keys[i]].bass += 0.25
+                    return s
+                update_state(self.chs, change, self.state_path)
+        self.assertEqual(self.run_threads(bump), [])
+        s = load_state(self.chs, self.state_path)
+        self.assertEqual((s.channels["music"].bass, s.channels["discord"].bass), (6.25, 6.25))
 
 
 if __name__ == "__main__":

@@ -207,9 +207,11 @@ and your backup folder are left alone.
 **No sound after plugging in a headset:** the chain follows your default output
 via EasyEffects; give it a second, or check `pavucontrol` → Output Devices.
 
-**Sinks missing after reboot:** confirm
-`~/.config/pipewire/pipewire.conf.d/virtual-sinks.conf` exists, then
-`systemctl --user restart pipewire pipewire-pulse wireplumber`.
+**Sinks missing after reboot, or a channel is silent:** run
+`audio-routes-apply --restart-pipewire`. It restarts PipeWire safely (EasyEffects
+quit and relaunched, volumes restored before anything plays) and tells you if
+something still isn't wired. Avoid restarting WirePlumber on its own — on this
+PipeWire version that disconnects everything.
 
 **All sound hardware gone after a reboot** (`pactl list cards short` is empty,
 only the virtual channels remain): the kernel booted without its sound drivers.

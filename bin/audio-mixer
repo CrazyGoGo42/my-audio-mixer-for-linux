@@ -31,7 +31,7 @@ for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "li
         sys.path.insert(0, _lib)
         break
 from audiomixer.config import (  # noqa: E402
-    AUTO_MIC, DEFAULT_OUTPUT, EQ_LIMIT_DB, SLOTS, load_channels, load_state, save_state,
+    AUTO_MIC, DEFAULT_OUTPUT, EQ_LIMIT_DB, SLOTS, load_channels, load_state, update_state,
 )
 from audiomixer.pwgraph import read_graph  # noqa: E402
 from audiomixer.reconcile import apply_eq, reconcile_once  # noqa: E402
@@ -164,11 +164,11 @@ def main(argv):
                 print(f"{d['kind']:7s} {d['name']}  ({d['description']})")
         return 0
     try:
-        state = apply_command(argv, channels, load_state(channels))
+        # Locked load -> change -> save: a hotkey and the window may run us at once.
+        state = update_state(channels, lambda current: apply_command(argv, channels, current))
     except ValueError as e:
         print(f"audio-mixer: {e}", file=sys.stderr)
         return 2
-    save_state(state)
     graph = read_graph()
     reconcile_once(graph)
     if argv[0] == "eq":

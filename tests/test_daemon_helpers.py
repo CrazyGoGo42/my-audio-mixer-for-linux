@@ -136,12 +136,39 @@ class VolumeTickTest(unittest.TestCase):
         self.assertIn("set-sink-volume Default_Audio 22937", self.calls())
         self.assertEqual(self.saved(), self.SAVED)
 
-    def test_nothing_happens_until_every_target_exists(self):
+    def test_present_targets_are_restored_but_nothing_saved_until_all_exist(self):
         g = self.graph()
         del g.nodes["Mic_In"]
         self.d.volume_tick(g)
-        self.assertEqual(self.calls(), [])
-        self.assertEqual(self.saved(), self.SAVED)
+        calls = self.calls()
+        self.assertIn("set-sink-volume Music_Audio 16384", calls)
+        self.assertFalse([c for c in calls if "Mic_In" in c])
+        for _ in range(3):
+            self.d.volume_tick(g)
+        self.assertEqual(self.saved(), self.SAVED)  # never a partial snapshot
+
+    def test_late_target_gets_its_own_restore(self):
+        g = self.graph()
+        del g.nodes["Mic_In"]
+        for _ in range(3):
+            self.d.volume_tick(g)
+        self.calls()
+        self.d.volume_tick(self.graph())            # Mic_In appears later
+        self.assertEqual(self.calls(), ["set-source-volume Mic_In 50000"])
+
+    def test_restore_happens_before_any_linking_when_nodes_are_new(self):
+        # An unplanned PipeWire restart: fresh nodes at 100%. Linking them before
+        # the saved levels are back would play them at 100% (review C1).
+        def fake_reconcile(graph):
+            with open(self.log, "a") as f:
+                f.write("LINK\n")
+        self.d.reconcile_once = fake_reconcile
+        self.d.apply_eq = lambda *a: None
+        self.d.tick(self.graph(shift=5))
+        calls = self.calls()
+        self.assertIn("LINK", calls)
+        first_link = calls.index("LINK")
+        self.assertTrue(any(c.startswith("set-") for c in calls[:first_link]), calls)
 
 
 if __name__ == "__main__":

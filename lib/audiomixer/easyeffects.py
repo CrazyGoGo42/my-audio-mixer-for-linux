@@ -79,6 +79,24 @@ def quit():
         subprocess.run(["pkill", "-f", "easyeffects --service-mode"], capture_output=True)
 
 
+def _wait_until_stopped(timeout):
+    deadline = time.time() + timeout
+    while is_running():
+        if time.time() > deadline:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def stop(timeout=10):
+    """Quit EasyEffects and wait until it's really gone — it writes its
+    settings back as it exits — killing it if it won't go."""
+    quit()
+    if not _wait_until_stopped(timeout):
+        subprocess.run(["pkill", "-f", "easyeffects --service-mode"], capture_output=True)
+        _wait_until_stopped(timeout)
+
+
 def launch(lockdir=LOCK_DIR):
     """Start EasyEffects in the background, clearing a stale lock first."""
     for name in ("EasyEffectsServer", "easyeffects.lock"):
@@ -107,15 +125,14 @@ def _write(path, text):
     os.replace(tmp, path)
 
 
-def point_at(input_device, output_device, rc_file=RC_FILE, lockdir=LOCK_DIR):
+def point_at(input_device, output_device, rc_file=RC_FILE, lockdir=LOCK_DIR, quit_timeout=10):
     """Pin EasyEffects' devices; True if anything changed. A running
-    EasyEffects is quit first (it would overwrite the file) and relaunched."""
+    EasyEffects is stopped first (it would overwrite the file) and relaunched."""
     if set_devices(_read(rc_file), input_device, output_device) == _read(rc_file):
         return False
     was_running = is_running()
     if was_running:
-        quit()
-        time.sleep(1)
+        stop(quit_timeout)
     _write(rc_file, set_devices(_read(rc_file), input_device, output_device))
     if was_running:
         launch(lockdir)
