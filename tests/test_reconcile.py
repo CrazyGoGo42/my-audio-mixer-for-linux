@@ -4,7 +4,8 @@ import tempfile
 import unittest
 
 from audiomixer.pwgraph import parse_dump
-from audiomixer.reconcile import apply_changes, plan_changes
+from audiomixer.config import Channel, ChannelState, MixerState
+from audiomixer.reconcile import apply_changes, apply_eq, plan_changes
 
 from tests.pwfake import DumpBuilder
 
@@ -92,6 +93,34 @@ class ApplyChangesTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("broken:output_FL", errors[0])
         self.assertEqual(len(self.calls()), 2)  # one failure doesn't stop the rest
+
+
+class ApplyEqTest(unittest.TestCase):
+    """Real apply_eq against a fake pw-cli that records its arguments."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.log = os.path.join(self.dir.name, "calls")
+        fake = os.path.join(self.dir.name, "pw-cli")
+        with open(fake, "w") as f:
+            f.write('#!/bin/sh\nfor a in "$@"; do printf "%s|" "$a"; done >> ' + self.log + '\necho >> ' + self.log + '\n')
+        os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = self.dir.name + os.pathsep + old
+        self.addCleanup(lambda: os.environ.__setitem__("PATH", old))
+
+    def test_sets_bass_and_treble_on_each_channel_sink_node(self):
+        chs = [Channel("music", "Music_Audio", "Music", ("-", "-", "-")),
+               Channel("gone", "Gone_Audio", "Gone", ("-", "-", "-"))]
+        st = MixerState({"A1": "@default"}, {"music": ChannelState(bass=6.0, treble=-2.5),
+                                             "gone": ChannelState()}, ["A1"], "@auto")
+        g = parse_dump(DumpBuilder().add("Music_Audio", "Audio/Sink", ins=IN).dump())
+        apply_eq(g, chs, st)
+        nid = g.nodes["Music_Audio"].id
+        with open(self.log) as f:
+            self.assertEqual(f.read().splitlines(),
+                             [f'set-param|{nid}|Props|{{ params = [ "bass:Gain" 6.0 "treble:Gain" -2.5 ] }}|'])
 
 
 if __name__ == "__main__":

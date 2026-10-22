@@ -13,8 +13,11 @@ It does exactly two things:
      dialog asking which channel it should use from now on. The choice is saved
      to routes.json and compiled into the routing config for next login.
 
-  2. Keeps the channel → EasyEffects → hardware chain wired if EasyEffects
-     restarts and recreates its sink.
+  2. Is the mixer's patchbay. The mixer's own nodes (channel outputs, the
+     EasyEffects strip, Mic_In, All Audio) are never linked by WirePlumber;
+     every few seconds, and on every graph change, this daemon links them as
+     ~/.config/audio-mixer/mixer.json says (FX on/off, A1–A4, which mic) and
+     re-applies each channel's Bass/Treble after PipeWire restarts.
 
   3. Remembers each channel's volume across reboots. WirePlumber saves these
      loopback-sink volumes but does NOT reliably re-apply them at login (the
@@ -43,7 +46,12 @@ for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "li
     if os.path.isdir(os.path.join(_lib, "audiomixer")):
         sys.path.insert(0, _lib)
         break
-from audiomixer.config import load_channels  # noqa: E402
+from audiomixer.config import (  # noqa: E402
+    ALL_AUDIO, EE_RETURN, MIC_IN, STATE_FILE, load_channels, load_state,
+)
+from audiomixer.pwgraph import read_graph  # noqa: E402
+from audiomixer.reconcile import apply_eq, reconcile_once  # noqa: E402
+from audiomixer.routing import own_nodes  # noqa: E402
 
 PID_FILE = "/tmp/audio-router-daemon.pid"
 ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
@@ -62,7 +70,7 @@ except OSError:
     CHANNEL_LIST = []
 DEFAULT_SINK = next((c.sink for c in CHANNEL_LIST if c.key == "default"), "Default_Audio")
 VIRTUAL_SINKS = {c.sink for c in CHANNEL_LIST}
-VIRTUAL_OUTPUTS = {s + "_out" for s in VIRTUAL_SINKS}
+OWN = own_nodes(CHANNEL_LIST)
 # Choices offered by the popup — every channel except the catch-all.
 CHANNELS = [(c.sink, c.label) for c in CHANNEL_LIST if c.key != "default"]
 
@@ -241,66 +249,81 @@ def assign(stream, choice):
 
 
 # --------------------------------------------------------------------------- #
-# EasyEffects chain safety
+# Patchbay
 # --------------------------------------------------------------------------- #
 
-def downstream_target():
-    sinks = run(["pactl", "list", "sinks", "short"])
-    if "easyeffects_sink" in sinks:
-        return "easyeffects_sink"
-    for line in sinks.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[1].startswith("alsa_output") and "hdmi" not in parts[1].lower():
-            return parts[1]
-    return None
+def skip_stream(node_name, own):
+    """Our own nodes are plumbing, never an app to ask about."""
+    return node_name in own
 
 
-def fix_chain():
-    """Ensure each virtual sink's output feeds the downstream (EasyEffects) sink."""
-    target = downstream_target()
-    if not target:
-        return
-    names = sink_index_to_name()
-    out = run(["pactl", "list", "sink-inputs"])
-    idx = node = sink = None
-    for raw in out.splitlines():
-        s = raw.strip()
-        if s.startswith("Sink Input #"):
-            idx, node, sink = s.split("#")[1], None, None
-        elif s.startswith("Sink:"):
-            sink = s.split(":")[1].strip()
-        elif "node.name" in s and "=" in s:
-            node = s.split("=")[1].strip().strip('"')
-            if node in VIRTUAL_OUTPUTS and sink and names.get(sink) != target:
-                subprocess.run(["pactl", "move-sink-input", idx, target],
-                               capture_output=True, text=True)
+# (channel sink -> node id, mixer.json mtime) last used to apply Bass/Treble.
+eq_seen = None
+# The poll thread and the event loop both run passes; never interleave them.
+patch_lock = threading.Lock()
+
+
+def patch():
+    """One patchbay pass: relink whatever drifted, and re-apply Bass/Treble
+    when the channel nodes are new (PipeWire restarted) or mixer.json changed.
+    Idempotent and quiet when nothing changed."""
+    with patch_lock:
+        _patch()
+
+
+def _patch():
+    global eq_seen
+    graph = read_graph()
+    if not graph.nodes:
+        return  # PipeWire not reachable right now
+    try:
+        reconcile_once(graph)
+    except Exception:
+        pass
+    try:
+        mtime = os.path.getmtime(STATE_FILE)
+    except OSError:
+        mtime = None
+    seen = ({c.sink: graph.nodes[c.sink].id for c in CHANNEL_LIST if c.sink in graph.nodes}, mtime)
+    if seen != eq_seen:
+        apply_eq(graph, CHANNEL_LIST, load_state(CHANNEL_LIST))
+        eq_seen = seen
 
 
 # --------------------------------------------------------------------------- #
-# Per-channel volume persistence
+# Volume persistence (channels, the EasyEffects strip, Mic_In, All Audio)
 # --------------------------------------------------------------------------- #
 
-def channel_volume_raw(sink):
-    """Current raw PA volume for a sink (65536 == 100%), or None if absent."""
-    m = re.search(r":\s*(\d+)\s*/", run(["pactl", "get-sink-volume", sink]))
+def volume_targets(channels):
+    """[(node name, "sink" | "source")] whose volume survives reboots."""
+    return ([(c.sink, "sink") for c in channels]
+            + [(EE_RETURN, "sink"), (MIC_IN, "source"), (ALL_AUDIO, "source")])
+
+
+VOLUME_TARGETS = volume_targets(CHANNEL_LIST)
+
+
+def volume_raw(name, kind):
+    """Current raw PA volume (65536 == 100%), or None if the node is absent."""
+    m = re.search(r":\s*(\d+)\s*/", run(["pactl", f"get-{kind}-volume", name]))
     return int(m.group(1)) if m else None
 
 
 def snapshot_volumes():
-    """{sink: raw_volume} for every channel currently present."""
+    """{node: raw_volume} for every volume target currently present."""
     vols = {}
-    for sink in VIRTUAL_SINKS:
-        v = channel_volume_raw(sink)
+    for name, kind in VOLUME_TARGETS:
+        v = volume_raw(name, kind)
         if v is not None:
-            vols[sink] = v
+            vols[name] = v
     return vols
 
 
 def save_volumes():
-    """Persist current channel volumes — only a complete, changed snapshot."""
+    """Persist current volumes — only a complete, changed snapshot."""
     vols = snapshot_volumes()
-    if not vols or len(vols) < len(VIRTUAL_SINKS):
-        return  # channels not all up yet; never persist a partial snapshot
+    if not vols or len(vols) < len(VOLUME_TARGETS):
+        return  # not all up yet; never persist a partial snapshot
     try:
         with open(VOL_FILE) as f:
             if json.load(f) == vols:
@@ -314,16 +337,17 @@ def save_volumes():
     os.replace(tmp, VOL_FILE)
 
 
-def restore_volumes():
-    """Re-apply the saved channel volumes (no-op on first ever run)."""
+def restore_volumes(path=VOL_FILE, targets=None):
+    """Re-apply the saved volumes (no-op on first ever run)."""
+    kinds = dict(VOLUME_TARGETS if targets is None else targets)
     try:
-        with open(VOL_FILE) as f:
+        with open(path) as f:
             vols = json.load(f)
     except Exception:
         return
-    for sink, raw in vols.items():
-        if sink in VIRTUAL_SINKS:
-            subprocess.run(["pactl", "set-sink-volume", sink, str(int(raw))],
+    for name, raw in vols.items():
+        if name in kinds:
+            subprocess.run(["pactl", f"set-{kinds[name]}-volume", name, str(int(raw))],
                            capture_output=True, text=True)
 
 
@@ -365,7 +389,7 @@ def cleanup(*_):
 
 def consider(stream, routes):
     binary, app = stream["binary"], stream["app"]
-    if stream["node"] in VIRTUAL_OUTPUTS:
+    if skip_stream(stream["node"], OWN):
         return
     if app in IGNORE_APPS or binary in IGNORE_APPS:
         return
@@ -404,16 +428,16 @@ def main():
     restore_volumes()
     volumes_ready = True
 
-    # Keep the channel -> EasyEffects chain wired even when EasyEffects starts
-    # late or restarts. fix_chain() is idempotent (it only moves a link that has
-    # drifted), so polling it is quiet and self-healing, and it sidesteps the
-    # timing races of reacting to individual graph events. The same poll snapshots
-    # channel volumes so the latest levels survive the next reboot.
+    # Keep the mixer wired even when EasyEffects or a device comes and goes.
+    # patch() is idempotent (it only touches links that drifted), so polling it
+    # is quiet and self-healing, and it sidesteps the timing races of reacting
+    # to individual graph events. The same poll snapshots volumes so the latest
+    # levels survive the next reboot.
     def chain_watch():
         while True:
             time.sleep(CHAIN_POLL_SECONDS)
             try:
-                fix_chain()
+                patch()
             except Exception:
                 pass
             if volumes_ready:
@@ -427,7 +451,7 @@ def main():
     # ends when pulse restarts, so we re-settle, re-wire the chain, rescan, and
     # resubscribe instead of dying.
     while True:
-        fix_chain()
+        patch()
         routes = load_routes()
         for stream in list_streams():
             consider(stream, routes)
@@ -435,17 +459,18 @@ def main():
         proc = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True)
         for line in proc.stdout:
-            if "'new'" in line and "sink-input" in line:
-                time.sleep(0.3)  # let props populate; stream is already safe on Default
-                # A channel's _out node links to the default sink when it first
-                # activates; pull it back onto the EasyEffects chain.
-                fix_chain()
-                routes = load_routes()
-                for stream in list_streams():
-                    consider(stream, routes)
-            elif ("'new'" in line or "'remove'" in line) and "sink" in line and "sink-input" not in line:
+            if "'new'" not in line and "'remove'" not in line:
+                continue
+            if "sink-input" in line:
+                if "'new'" in line:
+                    time.sleep(0.3)  # let props populate; stream is already safe on Default
+                    routes = load_routes()
+                    for stream in list_streams():
+                        consider(stream, routes)
+            elif "source-output" not in line and ("sink" in line or "source" in line):
+                # A device, EasyEffects or one of our nodes came or went: rewire.
                 time.sleep(0.5)
-                fix_chain()
+                patch()
 
         # Subscription ended — pulse restarted or crashed. Reconnect after a beat.
         try:

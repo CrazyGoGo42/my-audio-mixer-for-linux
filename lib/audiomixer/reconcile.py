@@ -36,10 +36,26 @@ def apply_changes(to_add, to_remove):
     return errors
 
 
-def reconcile_once():
-    """Bring the live graph in line with mixer.json. Returns (added, removed)."""
+def apply_eq(graph, channels, state):
+    """Set each channel's live Bass/Treble (filter-chain controls on its sink)."""
+    for ch in channels:
+        node = graph.nodes.get(ch.sink)
+        cs = state.channels.get(ch.key)
+        if node is None or cs is None:
+            continue
+        params = f'{{ params = [ "bass:Gain" {float(cs.bass)} "treble:Gain" {float(cs.treble)} ] }}'
+        try:
+            subprocess.run(["pw-cli", "set-param", str(node.id), "Props", params],
+                           capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def reconcile_once(graph=None):
+    """Bring the live graph in line with mixer.json. Returns (added, removed).
+    Pass a fresh `graph` to save reading it again."""
     channels = load_channels()
-    graph = read_graph()
+    graph = graph if graph is not None else read_graph()
     to_add, to_remove = plan_changes(desired_links(channels, load_state(channels), graph),
                                      graph, managed_nodes(channels))
     apply_changes(to_add, to_remove)
