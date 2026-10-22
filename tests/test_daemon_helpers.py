@@ -39,6 +39,12 @@ class DaemonHelpersTest(unittest.TestCase):
         self.assertFalse(self.d.skip_stream("Zen", own))
         self.assertFalse(self.d.skip_stream("spotify", own))
 
+    def test_no_prompt_while_window_runs(self):
+        # The window lists new apps itself ("new" marker); a zenity popup on
+        # top of it would ask the same question twice.
+        self.assertFalse(self.d.should_prompt(window_is_running=True))
+        self.assertTrue(self.d.should_prompt(window_is_running=False))
+
     def test_volume_targets_cover_channels_and_the_new_strips(self):
         self.assertEqual(self.d.volume_targets(CHS), [
             ("Default_Audio", "sink"), ("Music_Audio", "sink"), ("EE_Return", "sink"),

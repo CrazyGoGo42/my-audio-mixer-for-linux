@@ -1,26 +1,11 @@
-import importlib.machinery
-import importlib.util
-import os
 import unittest
 
+from audiomixer import commands as CLI
 from audiomixer.config import Channel, ChannelState, MixerState
 from audiomixer.pwgraph import parse_dump
 
 from tests.pwfake import DumpBuilder
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def load_cli():
-    path = os.path.join(HERE, "..", "bin", "audio-mixer")
-    loader = importlib.machinery.SourceFileLoader("audio_mixer_cli", path)
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
-
-
-CLI = load_cli()
 CHS = [Channel("default", "Default_Audio", "Desktop", ("KP_1", "KP_4", "KP_7")),
        Channel("discord", "Discord_Audio", "Discord", ("KP_2", "KP_5", "KP_8")),
        Channel("music", "Music_Audio", "Music", ("KP_3", "KP_6", "KP_9"))]

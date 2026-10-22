@@ -49,14 +49,13 @@ for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "li
 from audiomixer.config import (  # noqa: E402
     ALL_AUDIO, EE_RETURN, MIC_IN, STATE_FILE, load_channels, load_state,
 )
+from audiomixer import apps  # noqa: E402
 from audiomixer.pwgraph import read_graph  # noqa: E402
 from audiomixer.reconcile import apply_eq, reconcile_once  # noqa: E402
 from audiomixer.routing import own_nodes  # noqa: E402
 
 PID_FILE = "/tmp/audio-router-daemon.pid"
-ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
 VOL_FILE = os.path.expanduser("~/.config/audio-mixer/volumes.json")
-APPLY_CMD = os.path.expanduser("~/.local/bin/audio-routes-apply")
 
 # Node ids of the volume targets as last seen, and how many more passes should
 # restore (not save) volumes. Nodes (re)created at login or by a PipeWire
@@ -76,13 +75,6 @@ OWN = own_nodes(CHANNEL_LIST)
 # Choices offered by the popup — every channel except the catch-all.
 CHANNELS = [(c.sink, c.label) for c in CHANNEL_LIST if c.key != "default"]
 
-# Streams we never ask about (our own plumbing / system noise).
-IGNORE_APPS = {
-    "audio-osd", "speech-dispatcher-dummy", "libcanberra",
-    "GNOME Volume Control Media Keys", "gnome-shell", "Mutter",
-    "easyeffects", "xdg-desktop-portal", "gnome-control-center",
-}
-
 # Apps asked about this session (avoid repeat dialogs within one login).
 asked_this_session = set()
 
@@ -92,40 +84,6 @@ def run(cmd):
         return subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
     except Exception:
         return ""
-
-
-# --------------------------------------------------------------------------- #
-# routes.json
-# --------------------------------------------------------------------------- #
-
-def load_routes():
-    try:
-        with open(ROUTES_FILE) as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-    data.setdefault("binary", {})
-    data.setdefault("app", {})
-    data.setdefault("ignore", [])
-    return data
-
-
-def save_routes(data):
-    os.makedirs(os.path.dirname(ROUTES_FILE), exist_ok=True)
-    tmp = ROUTES_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, ROUTES_FILE)
-
-
-def is_known(routes, binary, app):
-    if binary and binary in routes["binary"]:
-        return True
-    if app and app in routes["app"]:
-        return True
-    if (binary and binary in routes["ignore"]) or (app and app in routes["ignore"]):
-        return True
-    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -173,17 +131,6 @@ def list_streams():
     return result
 
 
-def identity_key(stream):
-    """Best routes.json key + field for this stream (binary preferred)."""
-    if stream["binary"]:
-        return "binary", stream["binary"]
-    if stream["app"]:
-        return "app", stream["app"]
-    if stream["node"]:
-        return "app", stream["node"]
-    return None, None
-
-
 # --------------------------------------------------------------------------- #
 # Dialog + assignment
 # --------------------------------------------------------------------------- #
@@ -211,7 +158,7 @@ def ask_channel(display):
     rows = []
     for sink, label in CHANNELS:
         rows += [sink, label]
-    rows += ["__ignore__", "Leave on Default (stop asking)"]
+    rows += [apps.IGNORE, "Leave on Default (stop asking)"]
     try:
         r = subprocess.run(
             ["zenity", "--list", "--title", f"Route: {display}",
@@ -228,26 +175,35 @@ def ask_channel(display):
     return choice or None
 
 
+def stream_props(stream):
+    return {"application.process.binary": stream["binary"], "application.name": stream["app"],
+            "node.name": stream["node"]}
+
+
 def assign(stream, choice):
     """Persist the choice and make it take effect now (no audio blip)."""
-    field, key = identity_key(stream)
-    if not key:
-        return
-    routes = load_routes()
-    if choice == "__ignore__":
-        if key not in routes["ignore"]:
-            routes["ignore"].append(key)
-        save_routes(routes)
-        return
+    apps.remember(stream_props(stream), choice)
+    if choice != apps.IGNORE:
+        # Move the live stream right now for instant feedback (it's currently on
+        # the catch-all channel, so this is never a loud jump), and recompile the
+        # rules so it's born there next time.
+        apps.route_now([stream["idx"]], choice)
 
-    routes[field][key] = choice
-    save_routes(routes)
-    # Move the live stream right now for instant feedback (it's currently on the
-    # attenuated Default channel, so this is never a loud jump).
-    subprocess.run(["pactl", "move-sink-input", stream["idx"], choice],
-                   capture_output=True, text=True)
-    # Recompile the config (no pulse restart) so the rule is permanent at next login.
-    subprocess.run([APPLY_CMD, "--no-restart"], capture_output=True, text=True)
+
+# The mixer window lists new apps itself ("new" marker), so while it runs the
+# popup would ask the same question twice.
+WINDOW_ID = "io.github.crazygogo42.AudioMixer"
+
+
+def window_running():
+    out = run(["gdbus", "call", "--session", "--dest", "org.freedesktop.DBus",
+               "--object-path", "/org/freedesktop/DBus",
+               "--method", "org.freedesktop.DBus.NameHasOwner", WINDOW_ID])
+    return "true" in out
+
+
+def should_prompt(window_is_running):
+    return not window_is_running
 
 
 # --------------------------------------------------------------------------- #
@@ -417,14 +373,16 @@ def consider(stream, routes):
     binary, app = stream["binary"], stream["app"]
     if skip_stream(stream["node"], OWN):
         return
-    if app in IGNORE_APPS or binary in IGNORE_APPS:
+    if app in apps.IGNORE_APPS or binary in apps.IGNORE_APPS:
         return
     display = app or binary or stream["node"]
     if not display or display.startswith("PipeWire"):
         return
-    if is_known(routes, binary, app):
+    if apps.is_known(routes, stream_props(stream)):
         return
     if app in asked_this_session or binary in asked_this_session:
+        return
+    if not should_prompt(window_running()):
         return
     asked_this_session.add(app or binary)
     asked_this_session.add(binary or app)
@@ -467,7 +425,7 @@ def main():
     # resubscribe instead of dying.
     while True:
         tick()
-        routes = load_routes()
+        routes = apps.load_routes()
         for stream in list_streams():
             consider(stream, routes)
 
@@ -479,7 +437,7 @@ def main():
             if "sink-input" in line:
                 if "'new'" in line:
                     time.sleep(0.3)  # let props populate; stream is already safe on Default
-                    routes = load_routes()
+                    routes = apps.load_routes()
                     for stream in list_streams():
                         consider(stream, routes)
             elif "source-output" not in line and ("sink" in line or "source" in line):
