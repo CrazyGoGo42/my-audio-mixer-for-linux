@@ -24,6 +24,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="$HOME/.local/bin"
+LIB_DIR="$HOME/.local/lib/audio-mixer"
 MIXER_DIR="$HOME/.config/audio-mixer"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 AUTOSTART_DIR="$HOME/.config/autostart"
@@ -107,6 +108,11 @@ for f in $SCRIPTS; do
     cp "$SCRIPT_DIR/bin/$f" "$BIN_DIR/$f"
     chmod +x "$BIN_DIR/$f"
 done
+# The scripts' shared Python package.
+mkdir -p "$LIB_DIR"
+rm -rf "$LIB_DIR/audiomixer"
+cp -r "$SCRIPT_DIR/lib/audiomixer" "$LIB_DIR/audiomixer"
+rm -rf "$LIB_DIR/audiomixer/__pycache__"
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
     [ -f "$HOME/.bashrc" ] && echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
     warn "Added ~/.local/bin to PATH in ~/.bashrc — run: source ~/.bashrc"

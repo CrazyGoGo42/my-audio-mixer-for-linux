@@ -25,7 +25,14 @@ import sys
 import tempfile
 import time
 
-CHANNELS_FILE = os.path.expanduser("~/.config/audio-mixer/channels.conf")
+# The shared audiomixer package: lib/ next to bin/ in the repo, or installed.
+for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"),
+             os.path.expanduser("~/.local/lib/audio-mixer")):
+    if os.path.isdir(os.path.join(_lib, "audiomixer")):
+        sys.path.insert(0, _lib)
+        break
+from audiomixer.config import CHANNELS_FILE, catch_all, load_channels  # noqa: E402
+
 ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
 SINKS_FILE = os.path.expanduser("~/.config/pipewire/pipewire.conf.d/virtual-sinks.conf")
 OUT_FILE = os.path.expanduser(
@@ -43,17 +50,6 @@ FIELD_PROP = {
 def spa_quote(s):
     """Quote a string for a PipeWire SPA-JSON config value."""
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def load_channels():
-    """[(key, sink, label)] from channels.conf — the shared channel list."""
-    channels = []
-    with open(CHANNELS_FILE) as f:
-        for line in f:
-            parts = line.split("#", 1)[0].split()
-            if len(parts) >= 6:
-                channels.append((parts[0], parts[1], " ".join(parts[5:])))
-    return channels
 
 
 def load_routes(valid_sinks, default_sink):
@@ -105,7 +101,8 @@ def render_sinks(channels):
         "",
         "context.modules = [",
     ]
-    for _, sink, label in channels:
+    for ch in channels:
+        sink, label = ch.sink, ch.label
         lines += [
             "    {   name = libpipewire-module-loopback",
             "        args = {",
@@ -274,16 +271,17 @@ def main():
             print(f"not found: {path}", file=sys.stderr)
             return 1
     channels = load_channels()
-    default_sink = next((s for k, s, _ in channels if k == "default"), None)
-    if not default_sink:
-        print(f'{CHANNELS_FILE} needs a channel with key "default"', file=sys.stderr)
+    try:
+        default_sink = catch_all(channels).sink
+    except ValueError as e:
+        print(f"{CHANNELS_FILE}: {e}", file=sys.stderr)
         return 1
     sinks_changed = write_atomic(SINKS_FILE, render_sinks(channels))
-    by_channel = load_routes({s for _, s, _ in channels}, default_sink)
+    by_channel = load_routes({c.sink for c in channels}, default_sink)
     write_atomic(OUT_FILE, render(by_channel, default_sink))
     if "--no-restart" not in sys.argv:
         if sinks_changed or "--restart-pipewire" in sys.argv:
-            restart_pipewire([s for _, s, _ in channels])
+            restart_pipewire([c.sink for c in channels])
         else:
             systemctl("restart", "pipewire-pulse.service")
     return 0

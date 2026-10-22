@@ -37,8 +37,15 @@ import time
 
 CHAIN_POLL_SECONDS = 3
 
+# The shared audiomixer package: lib/ next to bin/ in the repo, or installed.
+for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"),
+             os.path.expanduser("~/.local/lib/audio-mixer")):
+    if os.path.isdir(os.path.join(_lib, "audiomixer")):
+        sys.path.insert(0, _lib)
+        break
+from audiomixer.config import load_channels  # noqa: E402
+
 PID_FILE = "/tmp/audio-router-daemon.pid"
-CHANNELS_FILE = os.path.expanduser("~/.config/audio-mixer/channels.conf")
 ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
 VOL_FILE = os.path.expanduser("~/.config/audio-mixer/volumes.json")
 APPLY_CMD = os.path.expanduser("~/.local/bin/audio-routes-apply")
@@ -48,27 +55,16 @@ APPLY_CMD = os.path.expanduser("~/.local/bin/audio-routes-apply")
 volumes_ready = False
 
 
-def load_channels():
-    """[(key, sink, label)] from channels.conf — the shared channel list."""
-    channels = []
-    try:
-        with open(CHANNELS_FILE) as f:
-            for line in f:
-                parts = line.split("#", 1)[0].split()
-                if len(parts) >= 6:
-                    channels.append((parts[0], parts[1], " ".join(parts[5:])))
-    except OSError:
-        pass
-    return channels
-
-
 # Read once at startup; audio-routes-apply restarts us when the list changes.
-CHANNEL_LIST = load_channels()
-DEFAULT_SINK = next((s for k, s, _ in CHANNEL_LIST if k == "default"), "Default_Audio")
-VIRTUAL_SINKS = {s for _, s, _ in CHANNEL_LIST}
+try:
+    CHANNEL_LIST = load_channels()
+except OSError:
+    CHANNEL_LIST = []
+DEFAULT_SINK = next((c.sink for c in CHANNEL_LIST if c.key == "default"), "Default_Audio")
+VIRTUAL_SINKS = {c.sink for c in CHANNEL_LIST}
 VIRTUAL_OUTPUTS = {s + "_out" for s in VIRTUAL_SINKS}
 # Choices offered by the popup — every channel except the catch-all.
-CHANNELS = [(s, label) for k, s, label in CHANNEL_LIST if k != "default"]
+CHANNELS = [(c.sink, c.label) for c in CHANNEL_LIST if c.key != "default"]
 
 # Streams we never ask about (our own plumbing / system noise).
 IGNORE_APPS = {

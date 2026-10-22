@@ -39,6 +39,7 @@ info "Removing scripts..."
 for f in $SCRIPTS; do
     rm -f "$HOME/.local/bin/$f"
 done
+rm -rf "$HOME/.local/lib/audio-mixer"
 # Legacy artifacts from older versions
 rm -f "$HOME/.local/bin/setup-audio-keybindings.sh"
 rm -rf "$HOME/.local/state/audio-router"

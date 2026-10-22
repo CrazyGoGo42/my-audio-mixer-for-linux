@@ -10,25 +10,21 @@ playing, without logging out. Unknown apps are left on the Default channel.
 import json
 import os
 import subprocess
+import sys
 
-CHANNELS_FILE = os.path.expanduser("~/.config/audio-mixer/channels.conf")
+# The shared audiomixer package: lib/ next to bin/ in the repo, or installed.
+for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"),
+             os.path.expanduser("~/.local/lib/audio-mixer")):
+    if os.path.isdir(os.path.join(_lib, "audiomixer")):
+        sys.path.insert(0, _lib)
+        break
+from audiomixer.config import catch_all, load_channels  # noqa: E402
+
 ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
 
-
-def load_channels():
-    """[(key, sink, label)] from channels.conf — the shared channel list."""
-    channels = []
-    with open(CHANNELS_FILE) as f:
-        for line in f:
-            parts = line.split("#", 1)[0].split()
-            if len(parts) >= 6:
-                channels.append((parts[0], parts[1], " ".join(parts[5:])))
-    return channels
-
-
 CHANNEL_LIST = load_channels()
-DEFAULT_SINK = next((s for k, s, _ in CHANNEL_LIST if k == "default"), "Default_Audio")
-VIRTUAL_OUTPUTS = {s + "_out" for _, s, _ in CHANNEL_LIST}
+DEFAULT_SINK = catch_all(CHANNEL_LIST).sink
+VIRTUAL_OUTPUTS = {c.sink + "_out" for c in CHANNEL_LIST}
 
 
 def run(cmd):
