@@ -11,12 +11,24 @@ import json
 import os
 import subprocess
 
+CHANNELS_FILE = os.path.expanduser("~/.config/audio-mixer/channels.conf")
 ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
-DEFAULT_SINK = "Default_Audio"
-VIRTUAL_SINKS = {
-    "Games_Audio", "Discord_Audio", "Music_Audio", "Browser_Audio", "Default_Audio",
-}
-VIRTUAL_OUTPUTS = {s + "_out" for s in VIRTUAL_SINKS}
+
+
+def load_channels():
+    """[(key, sink, label)] from channels.conf — the shared channel list."""
+    channels = []
+    with open(CHANNELS_FILE) as f:
+        for line in f:
+            parts = line.split("#", 1)[0].split()
+            if len(parts) >= 6:
+                channels.append((parts[0], parts[1], " ".join(parts[5:])))
+    return channels
+
+
+CHANNEL_LIST = load_channels()
+DEFAULT_SINK = next((s for k, s, _ in CHANNEL_LIST if k == "default"), "Default_Audio")
+VIRTUAL_OUTPUTS = {s + "_out" for _, s, _ in CHANNEL_LIST}
 
 
 def run(cmd):

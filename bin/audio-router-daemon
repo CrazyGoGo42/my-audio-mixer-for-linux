@@ -38,6 +38,7 @@ import time
 CHAIN_POLL_SECONDS = 3
 
 PID_FILE = "/tmp/audio-router-daemon.pid"
+CHANNELS_FILE = os.path.expanduser("~/.config/audio-mixer/channels.conf")
 ROUTES_FILE = os.path.expanduser("~/.config/audio-mixer/routes.json")
 VOL_FILE = os.path.expanduser("~/.config/audio-mixer/volumes.json")
 APPLY_CMD = os.path.expanduser("~/.local/bin/audio-routes-apply")
@@ -46,17 +47,28 @@ APPLY_CMD = os.path.expanduser("~/.local/bin/audio-routes-apply")
 # snapshot never overwrites the saved file with the boot-time 100% defaults.
 volumes_ready = False
 
-DEFAULT_SINK = "Default_Audio"
-VIRTUAL_SINKS = {
-    "Games_Audio", "Discord_Audio", "Music_Audio", "Browser_Audio", "Default_Audio",
-}
+
+def load_channels():
+    """[(key, sink, label)] from channels.conf — the shared channel list."""
+    channels = []
+    try:
+        with open(CHANNELS_FILE) as f:
+            for line in f:
+                parts = line.split("#", 1)[0].split()
+                if len(parts) >= 6:
+                    channels.append((parts[0], parts[1], " ".join(parts[5:])))
+    except OSError:
+        pass
+    return channels
+
+
+# Read once at startup; audio-routes-apply restarts us when the list changes.
+CHANNEL_LIST = load_channels()
+DEFAULT_SINK = next((s for k, s, _ in CHANNEL_LIST if k == "default"), "Default_Audio")
+VIRTUAL_SINKS = {s for _, s, _ in CHANNEL_LIST}
 VIRTUAL_OUTPUTS = {s + "_out" for s in VIRTUAL_SINKS}
-CHANNELS = [
-    ("Games_Audio", "Games"),
-    ("Discord_Audio", "Discord"),
-    ("Music_Audio", "Music"),
-    ("Browser_Audio", "Browser"),
-]
+# Choices offered by the popup — every channel except the catch-all.
+CHANNELS = [(s, label) for k, s, label in CHANNEL_LIST if k != "default"]
 
 # Streams we never ask about (our own plumbing / system noise).
 IGNORE_APPS = {
@@ -291,7 +303,7 @@ def snapshot_volumes():
 def save_volumes():
     """Persist current channel volumes — only a complete, changed snapshot."""
     vols = snapshot_volumes()
-    if len(vols) < len(VIRTUAL_SINKS):
+    if not vols or len(vols) < len(VIRTUAL_SINKS):
         return  # channels not all up yet; never persist a partial snapshot
     try:
         with open(VOL_FILE) as f:
@@ -337,7 +349,10 @@ def kill_previous():
     try:
         with open(PID_FILE) as f:
             old = int(f.read().strip())
-        if old != os.getpid():
+        # After a reboot the stale PID may belong to some unrelated process.
+        with open(f"/proc/{old}/cmdline", "rb") as f:
+            is_daemon = b"audio-router-daemon" in f.read()
+        if old != os.getpid() and is_daemon:
             os.kill(old, signal.SIGTERM)
             time.sleep(0.3)
     except Exception:

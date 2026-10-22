@@ -1,0 +1,139 @@
+#!/bin/bash
+# Back up (or restore) everything a fresh Ubuntu install would otherwise lose:
+#   - your channels, learned app routes and channel volumes   (~/.config/audio-mixer)
+#   - EasyEffects settings and presets                         (its Flatpak folders)
+#   - each sound card's profile, e.g. the headset's mic mode   (WirePlumber state)
+#
+# Usage: audio-mixer-backup [DIR]             save a backup (a daily timer runs this)
+#        audio-mixer-backup --restore [DIR]   put a backup back in place
+#        audio-mixer-backup --where           print the backup folder
+#
+# DIR defaults to the folder you last passed explicitly, else "audio-mixer-backup"
+# inside your Nextcloud sync folder (so it survives a reinstall), else
+# ~/audio-mixer-backup.
+#
+# EasyEffects can keep recent setting changes in memory until it quits, so a
+# backup taken while it runs may miss your last few tweaks.
+
+MIXER_DIR="$HOME/.config/audio-mixer"
+DIR_FILE="$MIXER_DIR/backup-dir"
+EE_APP=com.github.wwmm.easyeffects
+EE_CONFIG="$HOME/.var/app/$EE_APP/config/easyeffects"
+EE_DATA="$HOME/.var/app/$EE_APP/data/easyeffects"
+EE_LOCKDIR="/run/user/$(id -u)/.flatpak/$EE_APP/tmp"
+WP_PROFILES="$HOME/.local/state/wireplumber/default-profile"
+
+default_dir() {
+    if [ -s "$DIR_FILE" ]; then
+        cat "$DIR_FILE"
+        return
+    fi
+    local nc
+    nc=$(grep -m1 -oP '^[^=]*localPath=\K.*' "$HOME/.config/Nextcloud/nextcloud.cfg" 2>/dev/null)
+    if [ -n "$nc" ] && [ -d "$nc" ]; then
+        echo "${nc%/}/audio-mixer-backup"
+    else
+        echo "$HOME/audio-mixer-backup"
+    fi
+}
+
+# copy SRC/ DST/ [--delete] — mirror a folder, only rewriting files that changed
+# (keeps a synced backup folder from re-uploading everything every day).
+copy() {
+    mkdir -p "$2"
+    rsync -a $3 --exclude '*.tmp' "$1" "$2"
+}
+
+save() {
+    local dir=$1
+    mkdir -p "$dir" || exit 1
+    copy "$MIXER_DIR/" "$dir/audio-mixer/" --delete
+    [ -d "$EE_CONFIG" ] && copy "$EE_CONFIG/" "$dir/easyeffects/config/" --delete
+    [ -d "$EE_DATA" ] && copy "$EE_DATA/" "$dir/easyeffects/data/" --delete
+    if [ -f "$WP_PROFILES" ]; then
+        mkdir -p "$dir/wireplumber"
+        cp "$WP_PROFILES" "$dir/wireplumber/default-profile"
+    fi
+    date '+%F %T' > "$dir/LAST_BACKUP"
+    echo "Backed up to $dir"
+}
+
+restore() {
+    local dir=$1
+    if [ ! -d "$dir/audio-mixer" ]; then
+        echo "No backup found in $dir" >&2
+        exit 1
+    fi
+
+    copy "$dir/audio-mixer/" "$MIXER_DIR/"
+
+    # EasyEffects writes its settings when it quits, so it would overwrite what we
+    # put back. Quit it first (cleanly, so nothing is lost), restart it after.
+    local ee_was_running=""
+    if [ -d "$dir/easyeffects" ]; then
+        if pgrep -f 'easyeffects --service-mode' >/dev/null; then
+            ee_was_running=1
+            timeout 10 flatpak run "$EE_APP" -q >/dev/null 2>&1 \
+                || pkill -f 'easyeffects --service-mode'
+            sleep 1
+        fi
+        [ -d "$dir/easyeffects/config" ] && copy "$dir/easyeffects/config/" "$EE_CONFIG/"
+        [ -d "$dir/easyeffects/data" ] && copy "$dir/easyeffects/data/" "$EE_DATA/"
+    fi
+
+    # Card profiles: merge into WirePlumber's file so the saved ones win but any
+    # card that's new on this install keeps its own entry. They take effect the
+    # next time PipeWire starts (login, or the installer's restart). Don't restart
+    # WirePlumber on its own to apply them: on PipeWire 1.0 / WirePlumber 0.4 that
+    # drops every link in the graph and nothing gets relinked — total silence.
+    if [ -f "$dir/wireplumber/default-profile" ]; then
+        mkdir -p "$(dirname "$WP_PROFILES")"
+        python3 - "$dir/wireplumber/default-profile" "$WP_PROFILES" <<'PY'
+import configparser, sys
+
+def read(path):
+    cp = configparser.ConfigParser(delimiters=("=",), interpolation=None)
+    cp.optionxform = str
+    cp.read(path)
+    return cp
+
+saved, current = read(sys.argv[1]), read(sys.argv[2])
+before = {s: dict(current[s]) for s in current.sections()}
+for section in saved.sections():
+    if not current.has_section(section):
+        current.add_section(section)
+    for key, value in saved[section].items():
+        current[section][key] = value
+if {s: dict(current[s]) for s in current.sections()} != before:
+    with open(sys.argv[2], "w") as f:
+        current.write(f, space_around_delimiters=False)
+PY
+    fi
+
+    if [ -n "$ee_was_running" ]; then
+        rm -f "$EE_LOCKDIR/EasyEffectsServer" "$EE_LOCKDIR/easyeffects.lock"
+        setsid -f flatpak run "$EE_APP" --service-mode --hide-window >/dev/null 2>&1
+    fi
+    echo "Restored from $dir"
+}
+
+case "$1" in
+    --where)
+        default_dir
+        ;;
+    --restore)
+        restore "${2:-$(default_dir)}"
+        ;;
+    -h|--help)
+        sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    "")
+        save "$(default_dir)"
+        ;;
+    *)
+        # Remember an explicitly chosen folder for the daily timer.
+        mkdir -p "$MIXER_DIR"
+        realpath -m "$1" > "$DIR_FILE"
+        save "$(cat "$DIR_FILE")"
+        ;;
+esac

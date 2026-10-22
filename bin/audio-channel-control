@@ -1,47 +1,30 @@
 #!/bin/bash
 # Audio channel control — mute / volume up / volume down per virtual sink.
 # Usage: audio-channel-control <channel> <action>
-#   channel: games | discord | music | browser | default
+#   channel: a key from ~/.config/audio-mixer/channels.conf (games, discord, ...)
 #   action:  mute | up | down
 #
 # Volume is applied directly to the virtual sink. Because every app plays
 # through one of these sinks, each channel's level is fully independent of the
-# others and of the hardware slider. The intended % is cached in a state file
-# so it survives the sink suspending/resuming.
+# others and of the hardware slider. The current level is always read from the
+# sink itself, so a change made anywhere else (pavucontrol, GNOME Settings) is
+# where the next keypress continues from.
 
 STEP=1
 FIFO="/tmp/audio-osd.fifo"
-STATE="/tmp/audio-mixer-volumes"
+CHANNELS="$HOME/.config/audio-mixer/channels.conf"
 
-case "$1" in
-    games)   SINK="Games_Audio";   L="Games"   ;;
-    discord) SINK="Discord_Audio"; L="Discord" ;;
-    music)   SINK="Music_Audio";   L="Music"   ;;
-    browser) SINK="Browser_Audio"; L="Browser" ;;
-    default) SINK="Default_Audio"; L="Default" ;;
-    *) exit 1 ;;
-esac
+# channel key -> sink name + label (label is the rest of the line after 5 columns)
+read -r SINK L < <(awk -v k="$1" '{ sub(/#.*/, "") }
+    NF >= 6 && $1 == k { l = $6; for (i = 7; i <= NF; i++) l = l " " $i; print $2, l; exit }' \
+    "$CHANNELS" 2>/dev/null)
+[ -z "$SINK" ] && exit 1
 
 # Auto-start OSD daemon if its pipe is missing.
 [ ! -p "$FIFO" ] && { nohup "$HOME/.local/bin/audio-osd" >/dev/null 2>&1 & sleep 0.3; }
 
-# Current intended volume. The cache lives in /tmp, which is wiped on reboot, so
-# when it's missing fall back to the sink's ACTUAL level — never to a blind 100,
-# which would jump the channel to full volume on the first keypress after a boot
-# (and make the OSD report 100% for a channel that is really much lower).
-VOL=$(grep "^${SINK}=" "$STATE" 2>/dev/null | tail -1 | cut -d= -f2)
-if [ -z "$VOL" ]; then
-    VOL=$(pactl get-sink-volume "$SINK" 2>/dev/null | grep -oP '/\s*\K[0-9]+(?=%)' | head -1)
-    [ -z "$VOL" ] && VOL=100
-fi
-
-write_state() {
-    if grep -q "^${SINK}=" "$STATE" 2>/dev/null; then
-        sed -i "s/^${SINK}=.*/${SINK}=${VOL}/" "$STATE"
-    else
-        echo "${SINK}=${VOL}" >> "$STATE"
-    fi
-}
+VOL=$(pactl get-sink-volume "$SINK" 2>/dev/null | grep -oP '/\s*\K[0-9]+(?=%)' | head -1)
+[ -z "$VOL" ] && exit 1   # channel sink not up (PipeWire restarting) — touch nothing
 
 case "$2" in
     mute)
@@ -55,14 +38,12 @@ case "$2" in
     down)
         pactl set-sink-mute "$SINK" 0
         VOL=$((VOL - STEP)); [ "$VOL" -lt 0 ] && VOL=0
-        write_state
         pactl set-sink-volume "$SINK" "${VOL}%" 2>/dev/null
         echo "$L ${VOL}%" > "$FIFO" &
         ;;
     up)
         pactl set-sink-mute "$SINK" 0
         VOL=$((VOL + STEP)); [ "$VOL" -gt 100 ] && VOL=100
-        write_state
         pactl set-sink-volume "$SINK" "${VOL}%" 2>/dev/null
         echo "$L ${VOL}%" > "$FIFO" &
         ;;

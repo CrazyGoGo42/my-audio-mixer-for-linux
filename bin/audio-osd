@@ -13,9 +13,32 @@ import subprocess
 import threading
 import time
 
-import gi
+
+def wait_for_display():
+    """systemd starts us before GNOME exports DISPLAY/XAUTHORITY into the user
+    manager, and a process can't inherit them after the fact. GTK grabs the
+    display when it's imported, so without them it fails and we crash-loop.
+    Pull the vars from the manager ourselves, waiting until the session has
+    published them."""
+    while not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        try:
+            env = subprocess.run(["systemctl", "--user", "show-environment"],
+                                 capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            env = ""
+        for line in env.splitlines():
+            key, _, value = line.partition("=")
+            if key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY"):
+                os.environ[key] = value
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            time.sleep(1)
+
+
+wait_for_display()
+
+import gi  # noqa: E402  (must come after wait_for_display)
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, GLib, Gio
+from gi.repository import Gtk, Gdk, GLib, Gio  # noqa: E402
 
 FIFO_PATH = "/tmp/audio-osd.fifo"
 PIDFILE = "/tmp/audio-osd.pid"
@@ -215,11 +238,14 @@ def fifo_listener(osd_win):
 
 
 def main():
-    # Kill previous instance
+    # Kill previous instance (only if that PID really is an OSD — after a reboot
+    # the stale PID may belong to some unrelated process).
     try:
         with open(PIDFILE) as f:
             old_pid = int(f.read().strip())
-        os.kill(old_pid, 9)
+        with open(f"/proc/{old_pid}/cmdline", "rb") as f:
+            if old_pid != os.getpid() and b"audio-osd" in f.read():
+                os.kill(old_pid, 9)
     except Exception:
         pass
 
