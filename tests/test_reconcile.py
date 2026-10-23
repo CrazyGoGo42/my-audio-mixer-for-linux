@@ -120,7 +120,7 @@ class ApplyEqTest(unittest.TestCase):
         nid = g.nodes["Music_Audio"].id
         with open(self.log) as f:
             self.assertEqual(f.read().splitlines(),
-                             [f'set-param|{nid}|Props|{{ params = [ "bass:Gain" 6.0 "treble:Gain" -2.5 ] }}|'])
+                             [f'set-param|{nid}|Props|{{ params = [ "bass:Gain" 6.0 "mid:Gain" 0.0 "treble:Gain" -2.5 ] }}|'])
 
 
 if __name__ == "__main__":

@@ -7,18 +7,11 @@ from ..live import strip_targets
 from . import style
 from .apps import AppsList
 from .compact import CompactView
+from .layout import SMALLEST, STRIP_SPACING, WIDE_LAYOUTS
 from .menu import ThemeSwitcher, apply_theme, primary_menu
 from .settings import load_size, load_theme, save_size, save_theme
 from .strip import SLOTS, ChannelStrip, EasyEffectsStrip, MenuButton, MicStrip, StripWidget
 
-# The wide layout shrinks in steps as the window narrows, then hands over to
-# the compact rows; nothing ever scrolls. Each step with the narrowest window
-# it's shown at (sp: pixels at normal text size). tests/test_ui_layout.py
-# checks every step really fits.
-WIDE_LAYOUTS = (("roomy", 1020), ("snug", 840), ("tight", 720))
-COMPACT_HEIGHT = 560   # a window shorter than this gets the compact rows too
-STRIP_SPACING = {"roomy": 8, "snug": 6, "tight": 4}
-SMALLEST = (340, 380)  # the compact rows with something playing on every channel
 RESTARTS = {"engine": ("the audio engine", "Audio engine"),
             "easyeffects": ("EasyEffects", "EasyEffects")}
 
@@ -115,9 +108,9 @@ class MixerWindow(Adw.ApplicationWindow):
         self.layout = None
         self.set_layout("roomy")
         self._breakpoints = {}
-        for (name, _), (_, wider_from) in zip(WIDE_LAYOUTS[1:], WIDE_LAYOUTS):
-            self._add_breakpoint(f"max-width: {wider_from}sp", name)
-        self._add_breakpoint(f"max-width: {WIDE_LAYOUTS[-1][1]}sp or max-height: {COMPACT_HEIGHT}sp", "compact")
+        # A step takes over once the window is no bigger than the one above allows.
+        for name, (_, width, height) in zip([n for n, *_ in WIDE_LAYOUTS[1:]] + ["compact"], WIDE_LAYOUTS):
+            self._add_breakpoint(f"max-width: {width}sp or max-height: {height}sp", name)
         self.connect("notify::current-breakpoint", self._on_breakpoint)
         self.set_size_request(*SMALLEST)
 
@@ -144,7 +137,7 @@ class MixerWindow(Adw.ApplicationWindow):
         """One of WIDE_LAYOUTS' steps, or "compact"."""
         self.layout = name
         self.stack.set_visible_child_name("compact" if name == "compact" else "wide")
-        for step, _ in WIDE_LAYOUTS:
+        for step, *_ in WIDE_LAYOUTS:
             (self.body.add_css_class if step == name else self.body.remove_css_class)(step)
         if name in STRIP_SPACING:
             self.strips_row.set_spacing(STRIP_SPACING[name])

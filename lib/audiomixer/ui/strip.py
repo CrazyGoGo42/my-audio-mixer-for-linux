@@ -41,7 +41,7 @@ class StripWidget(Gtk.Box):
         self.heading = Gtk.Label(label=title)
         self.heading.add_css_class("heading")
         self.header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        # Strip-specific controls go above the fader (FX, Bass/Treble) and
+        # Strip-specific controls go above the fader (FX, the EQ knobs) and
         # below it (outputs); the compact layout doesn't show them.
         self.top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -244,7 +244,7 @@ class StripWidget(Gtk.Box):
 # --------------------------------------------------------------------------- #
 
 SLOTS = ("A1", "A2", "A3", "A4")
-EQ_DELAY_MS = 250  # coalesce Bass/Treble writes while dragging
+EQ_DELAY_MS = 250  # coalesce EQ writes while turning a knob
 
 
 class MenuButton(Gtk.MenuButton):
@@ -314,7 +314,7 @@ class _SlotToggles(Gtk.Box):
 
 
 class ChannelStrip(StripWidget):
-    """A channel: FX switch, Bass/Treble, and where it plays (A1–A4 or EasyEffects)."""
+    """A channel: FX switch, Treble/Mid/Bass, and where it plays (A1–A4 or EasyEffects)."""
 
     def __init__(self, controller, channel):
         super().__init__(controller, channel.sink, "sink", channel.label)
@@ -327,11 +327,14 @@ class ChannelStrip(StripWidget):
         self.fx.set_tooltip_text("On: through EasyEffects. Off: plays dry on its own outputs.")
         self.fx.connect("toggled", self._on_fx)
         self.top.append(self.fx)
-        knobs = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4, homogeneous=True)
-        knobs.set_halign(Gtk.Align.CENTER)
-        self.bass = self._knob(knobs, "Bass")
-        self.treble = self._knob(knobs, "Treble")
-        self.top.append(knobs)
+        # VoiceMeeter's EQ: Treble and Bass down the left, Mid set between them.
+        eq = Gtk.Grid(row_homogeneous=True, column_homogeneous=True, column_spacing=4)
+        eq.set_halign(Gtk.Align.CENTER)
+        self.treble = self._knob(eq, "Treble", 0, 0)
+        self.mid = self._knob(eq, "Mid", 1, 1)
+        self.bass = self._knob(eq, "Bass", 0, 2)
+        self.eq_knobs = [self.treble, self.mid, self.bass]
+        self.top.append(eq)
 
         self.where = Gtk.Stack()
         fx_label = Gtk.Label(label="→ EasyEffects")
@@ -345,17 +348,18 @@ class ChannelStrip(StripWidget):
         self.where.add_named(self.slots, "slots")
         self.bottom.append(self.where)
 
-    def _knob(self, row, label):
-        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    def _knob(self, grid, label, column, row):
+        cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         knob = Knob(-12, 12, 0.5)
+        knob.band = label.lower()
         knob.set_tooltip_text(f"{label}: 0 dB")
-        knob.connect("value-changed", self._on_eq, label.lower())
+        knob.connect("value-changed", self._on_eq, knob.band)
         name = Gtk.Label(label=label)
         name.add_css_class("caption")
         name.add_css_class("dim-label")
-        column.append(knob)
-        column.append(name)
-        row.append(column)
+        cell.append(knob)
+        cell.append(name)
+        grid.attach(cell, column, row, 1, 2)   # two half-rows: the columns interleave
         return knob
 
     def update(self, live, status=None):
@@ -368,9 +372,9 @@ class ChannelStrip(StripWidget):
             _set_toggle(self.fx, cs["fx"])
             self.fx.set_label("FX on" if cs["fx"] else "FX off")
             if time.monotonic() - self._eq_touched_at > TOUCH_HOLD:
-                for scale, value, name in ((self.bass, cs["bass"], "Bass"), (self.treble, cs["treble"], "Treble")):
-                    scale.set_value(value)
-                    scale.set_tooltip_text(f"{name}: {value:+.1f} dB")
+                for knob in self.eq_knobs:
+                    knob.set_value(cs.get(knob.band, 0.0))
+                    knob.set_tooltip_text(f"{knob.band.title()}: {knob.get_value():+.1f} dB")
             self.where.set_visible_child_name("fx" if cs["fx"] else "slots")
         finally:
             self._updating = False
@@ -395,7 +399,7 @@ class ChannelStrip(StripWidget):
         return False
 
     def flush_eq(self):
-        """Apply pending Bass/Treble changes now."""
+        """Apply pending EQ changes now."""
         if self._eq_id is not None:
             GLib.source_remove(self._eq_id)
             self._eq_id = None

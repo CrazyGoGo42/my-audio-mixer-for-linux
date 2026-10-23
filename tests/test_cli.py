@@ -77,7 +77,7 @@ class ApplyCommandTest(unittest.TestCase):
 
     def test_bad_input_is_a_clear_error(self):
         for argv in (["fx", "games", "on"], ["out", "music", "A9", "on"], ["slot", "B1", "none"],
-                     ["eq", "music", "mid", "3"], ["eq", "music", "bass", "loud"],
+                     ["eq", "music", "presence", "3"], ["eq", "music", "bass", "loud"],
                      ["fx", "music", "maybe"], ["teleport"], []):
             with self.assertRaises(ValueError, msg=argv):
                 run(*argv)
@@ -99,7 +99,7 @@ class StatusTest(unittest.TestCase):
                                               "description": "Speakers"})
         self.assertEqual(out["slots"]["A2"], {"value": HDMI, "device": None, "description": None})
         self.assertEqual(out["channels"][2], {"key": "music", "label": "Music", "sink": "Music_Audio",
-                                              "fx": False, "outputs": ["A2"], "bass": 3.0, "treble": 0.0})
+                                              "fx": False, "outputs": ["A2"], "bass": 3.0, "mid": 0.0, "treble": 0.0})
         self.assertEqual(out["fx_outputs"], ["A1"])
         self.assertEqual(out["mic"], {"value": "@auto", "device": "alsa_input.usb-blue"})
 

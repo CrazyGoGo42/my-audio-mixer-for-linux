@@ -7,7 +7,7 @@ touched.
 
 import subprocess
 
-from .config import load_channels, load_state
+from .config import EQ_BANDS, load_channels, load_state
 from .pwgraph import read_graph
 from .routing import desired_links, managed_nodes
 
@@ -36,14 +36,20 @@ def apply_changes(to_add, to_remove):
     return errors
 
 
+def eq_params(cs):
+    """The pw-cli Props for a channel's EQ filters."""
+    gains = " ".join(f'"{band}:Gain" {float(getattr(cs, band))}' for band in EQ_BANDS)
+    return f"{{ params = [ {gains} ] }}"
+
+
 def apply_eq(graph, channels, state):
-    """Set each channel's live Bass/Treble (filter-chain controls on its sink)."""
+    """Set each channel's live Bass/Mid/Treble (filter-chain controls on its sink)."""
     for ch in channels:
         node = graph.nodes.get(ch.sink)
         cs = state.channels.get(ch.key)
         if node is None or cs is None:
             continue
-        params = f'{{ params = [ "bass:Gain" {float(cs.bass)} "treble:Gain" {float(cs.treble)} ] }}'
+        params = eq_params(cs)
         try:
             subprocess.run(["pw-cli", "set-param", str(node.id), "Props", params],
                            capture_output=True, timeout=5)

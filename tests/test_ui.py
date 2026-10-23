@@ -38,7 +38,7 @@ def status(fx=None, outputs=None):
                   "A3": {"value": None, "device": None, "description": None},
                   "A4": {"value": None, "device": None, "description": None}},
         "channels": [{"key": c.key, "label": c.label, "sink": c.sink, "fx": fx.get(c.key, True),
-                      "outputs": outputs.get(c.key, ["A1"]), "bass": 0.0, "treble": 0.0} for c in CHS],
+                      "outputs": outputs.get(c.key, ["A1"]), "bass": 0.0, "mid": 0.0, "treble": 0.0} for c in CHS],
         "fx_outputs": ["A1"],
         "mic": {"value": "@auto", "device": "alsa_input.usb-blue"},
         "devices": [{"kind": "output", "name": SPEAKERS, "description": "Speakers"},
@@ -443,7 +443,7 @@ class ReviewFixesTest(UiTestBase):
         music.flush_eq()
         self.assertEqual(self.commands, [])
         self.assertEqual(self.calls, [["pw-cli", "set-param", "50", "Props",
-                                       '{ params = [ "bass:Gain" 6.0 "treble:Gain" 0.0 ] }']])
+                                       '{ params = [ "bass:Gain" 6.0 "mid:Gain" 0.0 "treble:Gain" 0.0 ] }']])
         self.assertEqual(self.saved_states[0].channels["music"].bass, 6.0)
 
     def state_for_eq(self):

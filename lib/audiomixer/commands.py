@@ -10,7 +10,7 @@ The mixer's commands — what `audio-mixer` and the mixer window both do.
 import copy
 
 from .config import (
-    AUTO_MIC, DEFAULT_OUTPUT, EQ_LIMIT_DB, SLOTS, load_channels, update_state,
+    AUTO_MIC, DEFAULT_OUTPUT, EQ_BANDS, EQ_LIMIT_DB, SLOTS, load_channels, update_state,
 )
 from .pwgraph import read_graph
 from .reconcile import apply_eq, reconcile_once
@@ -70,8 +70,8 @@ def apply_command(argv, channels, state):
         s.slots[_slot(args[0])] = {"default": DEFAULT_OUTPUT, "none": None}.get(args[1], args[1])
     elif cmd == "eq" and len(args) == 3:
         cs = s.channels[find_channel(channels, args[0]).key]
-        if args[1] not in ("bass", "treble"):
-            raise ValueError(f"expected bass or treble, not {args[1]!r}")
+        if args[1] not in EQ_BANDS:
+            raise ValueError(f"expected bass, mid or treble, not {args[1]!r}")
         try:
             db = float(args[2])
         except ValueError:
@@ -101,7 +101,7 @@ def status_dict(channels, state, graph):
         "slots": slots,
         "channels": [{"key": c.key, "label": c.label, "sink": c.sink,
                       "fx": state.channels[c.key].fx, "outputs": state.channels[c.key].outputs,
-                      "bass": state.channels[c.key].bass, "treble": state.channels[c.key].treble}
+                      **{band: getattr(state.channels[c.key], band) for band in EQ_BANDS}}
                      for c in channels],
         "fx_outputs": state.fx_outputs,
         "mic": {"value": state.mic, "device": pick_mic(state, graph, own)},

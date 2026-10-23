@@ -2,7 +2,7 @@
 The mixer's two config files and the names of the nodes it creates.
 
     channels.conf  the channel list (hand-edited; see config/channels.conf)
-    mixer.json     what the user set: output slots, FX, Bass/Treble, mic
+    mixer.json     what the user set: output slots, FX, Bass/Mid/Treble, mic
 
 Both live in ~/.config/audio-mixer/, so audio-mixer-backup covers them.
 Loading is forgiving: anything missing or malformed in mixer.json falls back to
@@ -25,6 +25,7 @@ SLOTS = ("A1", "A2", "A3", "A4")
 DEFAULT_OUTPUT = "@default"  # slot value: follow GNOME's default output device
 AUTO_MIC = "@auto"           # mic value: pick a real microphone automatically
 EQ_LIMIT_DB = 12.0
+EQ_BANDS = ("bass", "mid", "treble")   # each channel's filters, in signal order
 
 # Nodes outside our control that we connect to.
 EE_SINK = "easyeffects_sink"
@@ -105,6 +106,7 @@ class ChannelState:
     fx: bool = True
     outputs: list[str] = field(default_factory=lambda: ["A1"])
     bass: float = 0.0
+    mid: float = 0.0
     treble: float = 0.0
 
 
@@ -153,6 +155,7 @@ def load_state(channels, path=STATE_FILE):
             fx=raw["fx"] if isinstance(raw.get("fx"), bool) else True,
             outputs=_slot_list(raw.get("outputs"), ["A1"]),
             bass=_db(raw.get("bass")),
+            mid=_db(raw.get("mid")),
             treble=_db(raw.get("treble")),
         )
 

@@ -4,7 +4,7 @@ Generate the mixer's PipeWire config (written by audio-routes-apply).
 virtual-sinks.conf (pipewire.conf.d) — the nodes the mixer is built from:
 
     <Channel>_Audio   a sink apps play into (its volume = the channel slider),
-                      then Bass/Treble (builtin biquads), then <Channel>_Audio_out
+                      then Bass/Mid/Treble (builtin biquads), then <Channel>_Audio_out
     EE_Return         EasyEffects plays into it; EE_Return_out = the EasyEffects strip
     Mic_In            a source EasyEffects listens to; a real mic feeds Mic_In_in
     All_Audio         a source carrying every channel; channels feed All_Audio_in
@@ -18,9 +18,10 @@ is born on, from routes.json.
 
 import re
 
-from .config import ALL_AUDIO, EE_RETURN, MIC_IN
+from .config import ALL_AUDIO, EE_RETURN, EQ_BANDS, MIC_IN
 
 BASS_HZ = 100.0
+MID_HZ = 1000.0
 TREBLE_HZ = 8000.0
 SHELF_Q = 0.7
 
@@ -46,10 +47,9 @@ def _loopback(description, capture, playback, comment):
 
 def _channel(ch, cs):
     desc = spa_quote(ch.label + " Audio")
-    bass = float(cs.bass) if cs else 0.0
-    treble = float(cs.treble) if cs else 0.0
+    bass, mid, treble = (float(getattr(cs, band)) if cs else 0.0 for band in EQ_BANDS)
     return [
-        f"    # {ch.label}: sink (volume) -> Bass -> Treble -> {ch.sink}_out",
+        f"    # {ch.label}: sink (volume) -> Bass -> Mid -> Treble -> {ch.sink}_out",
         "    {   name = libpipewire-module-filter-chain",
         "        flags = [ nofail ]",
         "        args = {",
@@ -58,9 +58,10 @@ def _channel(ch, cs):
         "            filter.graph = {",
         "                nodes = [",
         f'                    {{ type = builtin name = bass label = bq_lowshelf control = {{ "Freq" = {BASS_HZ} "Q" = {SHELF_Q} "Gain" = {bass} }} }}',
+        f'                    {{ type = builtin name = mid label = bq_peaking control = {{ "Freq" = {MID_HZ} "Q" = {SHELF_Q} "Gain" = {mid} }} }}',
         f'                    {{ type = builtin name = treble label = bq_highshelf control = {{ "Freq" = {TREBLE_HZ} "Q" = {SHELF_Q} "Gain" = {treble} }} }}',
         "                ]",
-        '                links = [ { output = "bass:Out" input = "treble:In" } ]',
+        '                links = [ { output = "bass:Out" input = "mid:In" } { output = "mid:Out" input = "treble:In" } ]',
         "            }",
         "            audio.channels = 2",
         "            audio.position = [ FL FR ]",

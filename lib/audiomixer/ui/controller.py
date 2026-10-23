@@ -19,6 +19,7 @@ from .. import apps, commands, easyeffects, hotkeys, live
 from ..config import STATE_FILE, load_state, rename_channel, update_state
 from ..meters import die_with_parent
 from ..pwgraph import read_graph
+from ..reconcile import eq_params
 
 
 def event_needs(line):
@@ -129,7 +130,7 @@ class Controller:
             self._run(["pactl", f"set-{kind}-mute", name, "0"])
 
     def set_eq(self, key, band, value):
-        """Bass/Treble while dragging: save it and set just this channel's
+        """Bass/Mid/Treble while dragging: save it and set just this channel's
         filter (one pw-cli) — no rewiring pass, no pw-dump."""
         try:
             state = self._update_state(
@@ -140,8 +141,7 @@ class Controller:
         live = self.snapshot.strips.get(channel.sink)
         cs = state.channels[key]
         if live and live.node_id is not None:
-            self._run(["pw-cli", "set-param", str(live.node_id), "Props",
-                       f'{{ params = [ "bass:Gain" {float(cs.bass)} "treble:Gain" {float(cs.treble)} ] }}'])
+            self._run(["pw-cli", "set-param", str(live.node_id), "Props", eq_params(cs)])
 
     def set_mute(self, name, kind, on):
         """Absolute (never "toggle"), so a click can't undo a hotkey mute that

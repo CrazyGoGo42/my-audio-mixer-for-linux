@@ -14,18 +14,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 LIB = os.path.join(ROOT, "lib")
 
-# Just either side of every switch-over (+10 for the border), plus the extremes.
-SIZES = [(1400, 900), (1031, 900), (1030, 900), (851, 900), (850, 900), (731, 900),
-         (730, 900), (500, 700), (340, 380), (1400, 571), (1400, 570), (1031, 571),
-         (851, 571), (731, 571)]
+def switch_over_sizes():
+    """Window sizes just either side of every switch-over, plus the extremes.
+    +10: on a bare X server the window keeps a 5 px border around its content."""
+    from audiomixer.ui.layout import WIDE_LAYOUTS
+    sizes = [(1400, 900)]
+    for _, width, height in WIDE_LAYOUTS:
+        sizes += [(width + 11, 900), (width + 10, 900), (1400, height + 11), (1400, height + 10),
+                  (width + 11, height + 11)]   # the smallest a step is ever shown at
+    return sizes + [(500, 700), (340, 380)]
 
 
 def expected_layout(width, height):
-    from audiomixer.ui.window import COMPACT_HEIGHT, WIDE_LAYOUTS
-    if height <= COMPACT_HEIGHT:
-        return "compact"
-    # WIDE_LAYOUTS goes roomy -> tight; each step shows above its narrowest width.
-    return next((name for name, narrowest in WIDE_LAYOUTS if width > narrowest), "compact")
+    from audiomixer.ui.layout import WIDE_LAYOUTS
+    # WIDE_LAYOUTS goes roomy -> tight; a step shows while the window is both
+    # wider and taller than its smallest size.
+    return next((name for name, w, h in WIDE_LAYOUTS if width > w and height > h), "compact")
 
 
 def run_harness(sizes, tmp, shots=False):
@@ -59,14 +63,16 @@ class WindowSizesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.results = run_harness(SIZES, cls.tmp.name)
+        cls.sizes = switch_over_sizes()
+        cls.results = run_harness(cls.sizes, cls.tmp.name)
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
     def test_every_size_was_tried(self):
-        self.assertEqual([tuple(r["size"]) for r in self.results], SIZES)
+        self.assertEqual([tuple(r["size"]) for r in self.results], self.sizes)
+        self.assertEqual({r["layout"] for r in self.results}, {"roomy", "snug", "tight", "compact"})
 
     def test_each_size_shows_the_layout_meant_for_it(self):
         for r in self.results:
