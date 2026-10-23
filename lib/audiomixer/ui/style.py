@@ -27,6 +27,12 @@ CSS = """
 .knob:focus-visible { outline: 2px solid alpha(@accent_color, 0.5); outline-offset: 1px;
                       border-radius: 9999px; }
 
+/* The mic's Color Panel pad: lit in the accent colour like the knobs. */
+.color-panel { min-width: 100px; min-height: 78px; color: @accent_bg_color; }
+.snug .color-panel { min-width: 88px; min-height: 68px; }
+.tight .color-panel { min-width: 74px; min-height: 58px; }
+.color-panel:focus-visible { outline: 2px solid alpha(@accent_color, 0.5); outline-offset: 1px; border-radius: 8px; }
+
 /* Follow system / light / dark: three round swatches, as in GNOME's own apps. */
 .theme-switcher { margin: 6px 9px; }
 .theme-switcher checkbutton {

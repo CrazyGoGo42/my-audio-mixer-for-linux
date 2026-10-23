@@ -45,6 +45,8 @@ def status(fx=None, outputs=None):
                     {"kind": "output", "name": HDMI, "description": "HDMI"},
                     {"kind": "mic", "name": "alsa_input.usb-blue", "description": "Blue mic"}],
         "ee_preset": "Bass Enhancing",
+        "mic_fx": {"color_x": 0.0, "color_y": 0.0, "comp": 0.0, "gate": 0.0},
+        "mic_fx_node": 77,
     }
 
 

@@ -86,14 +86,23 @@ def apply_command(argv, channels, state):
         if len(args) != len(names) + 1:
             raise ValueError("expected: mic color <x -1..1> <y 0..1>" if args[0] == "color"
                              else f"expected: mic {args[0]} <0-10>")
-        for name, text in zip(names, args[1:]):
-            try:
-                value = float(text)
-            except ValueError:
-                raise ValueError(f"expected a number, not {text!r}") from None
-            setattr(s.mic_fx, name, max(MIC_FX_RANGES[name][0], min(MIC_FX_RANGES[name][1], value)))
+        try:
+            s = with_mic_fx(s, **{name: float(text) for name, text in zip(names, args[1:])})
+        except ValueError:
+            raise ValueError(f"expected numbers, not {' '.join(args[1:])!r}") from None
     else:
         raise ValueError("unknown command; run `audio-mixer --help`")
+    return s
+
+
+def with_mic_fx(state, **changes):
+    """A copy of state with these mic settings (MicFx fields), kept in range."""
+    s = copy.deepcopy(state)
+    for name, value in changes.items():
+        if name not in MIC_FX_RANGES:
+            raise ValueError(f"no mic setting {name!r}")
+        low, high = MIC_FX_RANGES[name]
+        setattr(s.mic_fx, name, max(low, min(high, float(value))))
     return s
 
 

@@ -2,6 +2,8 @@
 
 from gi.repository import Gtk
 
+from .tips import tip
+
 
 class AppRowWidget(Gtk.Box):
     def __init__(self, controller, channels, app):
@@ -17,7 +19,7 @@ class AppRowWidget(Gtk.Box):
         self.new = Gtk.Label(label="NEW")
         self.new.add_css_class("caption-heading")
         self.new.add_css_class("warning")
-        self.new.set_tooltip_text("Not routed yet — pick its channel and it starts there from now on")
+        tip(self.new, "Not routed yet — pick its channel and it starts there from now on")
         self.append(self.new)
 
         self.meter = Gtk.LevelBar()

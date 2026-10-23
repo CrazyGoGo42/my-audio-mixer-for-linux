@@ -80,10 +80,64 @@ class KnobTest(UiTestBase):
         knob.step(-1)
         self.assertEqual(knob.get_value(), 0.5)
 
-    def test_turning_a_knob_shows_the_value(self):
+    def test_a_knob_shows_its_value_itself_and_its_tooltip_stays_its_name(self):
+        from audiomixer.ui.knob import value_text
         music = self.strip("Music_Audio")
         music.treble.set_value(-3)
-        self.assertEqual(music.treble.get_tooltip_text(), "Treble: -3.0 dB")
+        self.assertEqual(value_text(music.treble.get_value()), "-3")
+        from audiomixer.ui.tips import tip_text
+        self.assertEqual(tip_text(music.treble), "Treble")
+
+
+class RefreshCostTest(UiTestBase):
+    """Lightweight: setting a tooltip costs ~10 ms here (even unchanged), so a
+    refresh that changes nothing must not rewrite any."""
+
+    def test_a_refresh_with_nothing_new_writes_no_tooltips(self):
+        from gi.repository import Gtk as gtk
+        writes = []
+        original = gtk.Widget.set_tooltip_text
+
+        def counting(widget, text):
+            writes.append(text)
+            return original(widget, text)
+        gtk.Widget.set_tooltip_text = counting
+        self.addCleanup(setattr, gtk.Widget, "set_tooltip_text", original)
+        self.controller.refresh(status_too=True)
+        self.assertEqual(writes, [])
+
+    def test_building_a_window_writes_no_tooltips_the_slow_way(self):
+        from gi.repository import Gtk as gtk
+        from audiomixer.ui.window import MixerWindow
+        writes = []
+        original = gtk.Widget.set_tooltip_text
+        gtk.Widget.set_tooltip_text = lambda w, t: writes.append(t) or original(w, t)
+        self.addCleanup(setattr, gtk.Widget, "set_tooltip_text", original)
+        win = MixerWindow(self.controller)
+        self.addCleanup(win.destroy)
+        self.controller.refresh(status_too=True)
+        self.assertEqual(writes, [])
+
+    def test_tips_are_handed_to_gtk_only_on_hover(self):
+        from audiomixer.ui.tips import tip, tip_text
+        button = Gtk().Button()
+        tip(button, "Hello")
+        self.assertTrue(button.get_has_tooltip())
+        self.assertEqual(tip_text(button), "Hello")
+        tip(button, "Bye")
+        self.assertEqual(tip_text(button), "Bye")
+
+    def test_turning_a_knob_writes_no_tooltips(self):
+        from gi.repository import Gtk as gtk
+        writes = []
+        original = gtk.Widget.set_tooltip_text
+        gtk.Widget.set_tooltip_text = lambda w, t: writes.append(t) or original(w, t)
+        self.addCleanup(setattr, gtk.Widget, "set_tooltip_text", original)
+        knob = self.strip("Music_Audio").bass
+        knob.drag_begin()
+        for dy in range(0, -60, -5):
+            knob.drag_update(0, dy)
+        self.assertEqual(writes, [])
 
 
 class SettingsMenuTest(UiTestBase):

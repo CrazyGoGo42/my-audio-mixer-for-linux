@@ -2,6 +2,8 @@
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from .tips import tip
+
 SCHEMES = {"system": Adw.ColorScheme.DEFAULT, "light": Adw.ColorScheme.FORCE_LIGHT,
            "dark": Adw.ColorScheme.FORCE_DARK}
 THEME_TIPS = (("system", "Follow system style"), ("light", "Light style"), ("dark", "Dark style"))
@@ -19,11 +21,11 @@ class ThemeSwitcher(Gtk.Box):
         self.add_css_class("theme-switcher")
         self.buttons = {}
         group = None
-        for theme, tip in THEME_TIPS:
+        for theme, text in THEME_TIPS:
             button = Gtk.CheckButton()
             button.add_css_class(theme)
-            button.set_tooltip_text(tip)
-            button.update_property([Gtk.AccessibleProperty.LABEL], [tip])
+            tip(button, text)
+            button.update_property([Gtk.AccessibleProperty.LABEL], [text])
             if group:
                 button.set_group(group)
             group = group or button

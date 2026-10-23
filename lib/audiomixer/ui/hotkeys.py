@@ -9,6 +9,7 @@ the keys before the window sees them. Esc or closing cancels and restores them.
 from gi.repository import Gdk, Gtk
 
 from .. import hotkeys
+from .tips import tip
 
 MODIFIER_KEYS = {
     Gdk.KEY_Shift_L, Gdk.KEY_Shift_R, Gdk.KEY_Control_L, Gdk.KEY_Control_R,
@@ -40,7 +41,7 @@ class HotkeyRow(Gtk.Box):
         change.connect("clicked", lambda _b: popover.start_capture(action))
         self.append(change)
         clear = Gtk.Button.new_from_icon_name("edit-clear-symbolic")
-        clear.set_tooltip_text("Remove this hotkey")
+        tip(clear, "Remove this hotkey")
         clear.connect("clicked", lambda _b: popover.clear(action))
         self.append(clear)
 

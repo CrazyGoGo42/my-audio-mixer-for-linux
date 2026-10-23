@@ -1,6 +1,6 @@
-"""A round knob for Bass/Treble, VoiceMeeter style: drag up/down to turn it,
-double-click for flat (0 dB), arrow keys or the wheel (once clicked) for
-half-dB steps. Speaks Gtk.Range's language — get_value / set_value and a
+"""A round knob, VoiceMeeter style (Treble/Mid/Bass, Comp, Gate): drag up/down
+to turn it, double-click to reset, arrow keys or the wheel (once clicked) for
+single steps. Speaks Gtk.Range's language — get_value / set_value and a
 "value-changed" signal — so the strip code didn't change."""
 
 import math
@@ -15,8 +15,10 @@ DRAG_PIXELS = 160          # a drag this long sweeps the whole range
 START, SWEEP = 0.75 * math.pi, 1.5 * math.pi   # 7:30 round to 4:30, like a real knob
 
 
-def value_text(value):
-    return "0" if value == 0 else f"{value:+g}"
+def value_text(value, signed=True):
+    if value == 0:
+        return "0"
+    return f"{value:+g}" if signed else f"{value:g}"
 
 
 class Knob(Gtk.DrawingArea):
@@ -25,7 +27,10 @@ class Knob(Gtk.DrawingArea):
     def __init__(self, lower=-12.0, upper=12.0, step=0.5):
         super().__init__(accessible_role=Gtk.AccessibleRole.SLIDER, focusable=True)
         self.lower, self.upper, self.step_size = float(lower), float(upper), float(step)
-        self._value = 0.0
+        # EQ knobs are centred on 0 dB (+/-); Comp/Gate count up from their start.
+        self.signed = self.lower < 0 < self.upper
+        self.origin = 0.0 if self.signed else self.lower
+        self._value = self.origin
         self._drag_from = 0.0
         self.add_css_class("knob")
         self.set_draw_func(self._draw)
@@ -51,7 +56,7 @@ class Knob(Gtk.DrawingArea):
         return self._value
 
     def set_value(self, value):
-        value = round(float(value) / self.step_size) * self.step_size
+        value = round(round(float(value) / self.step_size) * self.step_size, 6)
         value = max(self.lower, min(self.upper, value)) + 0.0   # no "-0"
         if value == self._value:
             return
@@ -61,7 +66,10 @@ class Knob(Gtk.DrawingArea):
         self.emit("value-changed")
 
     def reset(self):
-        self.set_value(0)
+        self.set_value(self.origin)
+
+    def text(self):
+        return value_text(self._value, self.signed)
 
     def step(self, steps):
         self.set_value(self._value + steps * self.step_size)
@@ -97,7 +105,7 @@ class Knob(Gtk.DrawingArea):
         self.update_property(
             [Gtk.AccessibleProperty.VALUE_MIN, Gtk.AccessibleProperty.VALUE_MAX,
              Gtk.AccessibleProperty.VALUE_NOW, Gtk.AccessibleProperty.VALUE_TEXT],
-            [self.lower, self.upper, self._value, f"{value_text(self._value)} dB"])
+            [self.lower, self.upper, self._value, self.text()])
 
     # ------------------------------------------------------------------ draw
     def _draw(self, _area, cr, width, height):
@@ -121,12 +129,12 @@ class Knob(Gtk.DrawingArea):
         cr.set_line_width(line)
         cr.set_line_cap(1)  # cairo.LINE_CAP_ROUND
         arc(START, START + SWEEP, fg, 0.18)          # the whole range, faint
-        # Lit from flat (12 o'clock) to the value: boost or cut at a glance.
+        # Lit from flat (12 o'clock, or the start for Comp/Gate) to the value.
         span = self.upper - self.lower
         angle = START + SWEEP * (self._value - self.lower) / span
-        middle = START + SWEEP * (0 - self.lower) / span
-        if self._value:
-            arc(min(angle, middle), max(angle, middle), accent, 1.0)
+        origin = START + SWEEP * (self.origin - self.lower) / span
+        if self._value != self.origin:
+            arc(min(angle, origin), max(angle, origin), accent, 1.0)
         # The knob's marker: a dot just inside the ring, pointing at the value.
         dot = max(2.0, size / 18)
         reach = radius - line - dot - 1.5
@@ -134,7 +142,7 @@ class Knob(Gtk.DrawingArea):
         cr.arc(cx + reach * math.cos(angle), cy + reach * math.sin(angle), dot, 0, 2 * math.pi)
         cr.fill()
 
-        layout = self.create_pango_layout(value_text(self._value))
+        layout = self.create_pango_layout(self.text())
         font = layout.get_context().get_font_description().copy()
         font.set_absolute_size(max(7.5, size * 0.24) * 1024)  # Pango.SCALE
         layout.set_font_description(font)

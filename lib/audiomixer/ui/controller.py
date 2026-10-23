@@ -16,7 +16,8 @@ import time
 from gi.repository import GLib
 
 from .. import apps, commands, easyeffects, hotkeys, live
-from ..config import STATE_FILE, load_state, rename_channel, update_state
+from .. import micfx
+from ..config import MIC_IN, STATE_FILE, load_state, rename_channel, update_state
 from ..meters import die_with_parent
 from ..pwgraph import read_graph
 from ..reconcile import eq_params
@@ -45,6 +46,8 @@ def read_status(channels):
     st = commands.status_dict(channels, load_state(channels), graph)
     st["devices"] = commands.devices_list(channels, graph)
     st["ee_preset"] = easyeffects.output_preset()
+    mic_filter = graph.nodes.get(MIC_IN + "_in")   # where the mic's controls live
+    st["mic_fx_node"] = mic_filter.id if mic_filter else None
     return st
 
 
@@ -142,6 +145,17 @@ class Controller:
         cs = state.channels[key]
         if live and live.node_id is not None:
             self._run(["pw-cli", "set-param", str(live.node_id), "Props", eq_params(cs)])
+
+    def set_mic_fx(self, **changes):
+        """The Mic strip's Color Panel and Comp/Gate while you move them: saved,
+        and set live on the mic's filter (one pw-cli) — no rewiring, no pw-dump."""
+        try:
+            state = self._update_state(lambda current: commands.with_mic_fx(current, **changes))
+        except (ValueError, OSError):
+            return
+        node = (self.status or {}).get("mic_fx_node")
+        if node is not None:
+            self._run(["pw-cli", "set-param", str(node), "Props", micfx.props(state.mic_fx)])
 
     def set_mute(self, name, kind, on):
         """Absolute (never "toggle"), so a click can't undo a hotkey mute that

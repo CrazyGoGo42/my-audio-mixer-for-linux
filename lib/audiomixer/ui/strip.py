@@ -5,6 +5,7 @@ import time
 from gi.repository import GLib, Gtk
 
 from .knob import Knob
+from .tips import tip
 
 
 def guard_wheel(scale, owner):
@@ -67,7 +68,7 @@ class StripWidget(Gtk.Box):
         # ... and a channel's name to rename it (the built-in strips keep theirs).
         self.is_channel = any(c.sink == name for c in controller.channels)
         if self.is_channel:
-            self.heading.set_tooltip_text("Right-click to rename")
+            tip(self.heading, "Right-click to rename")
             click = Gtk.GestureClick(button=3)
             click.connect("pressed", lambda *_: self.rename_popover().popup())
             self.heading.add_controller(click)
@@ -265,7 +266,7 @@ class MenuButton(Gtk.MenuButton):
 
     def set_label(self, label):
         self._label.set_label(label)
-        self.set_tooltip_text(label)
+        tip(self, label)
 
     def get_label(self):
         return self._label.get_label()
@@ -324,7 +325,7 @@ class ChannelStrip(StripWidget):
         self._eq_touched_at = 0.0
 
         self.fx = Gtk.ToggleButton(label="FX")
-        self.fx.set_tooltip_text("On: through EasyEffects. Off: plays dry on its own outputs.")
+        tip(self.fx, "On: through EasyEffects. Off: plays dry on its own outputs.")
         self.fx.connect("toggled", self._on_fx)
         self.top.append(self.fx)
         # VoiceMeeter's EQ: Treble and Bass down the left, Mid set between them.
@@ -352,7 +353,7 @@ class ChannelStrip(StripWidget):
         cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         knob = Knob(-12, 12, 0.5)
         knob.band = label.lower()
-        knob.set_tooltip_text(f"{label}: 0 dB")
+        tip(knob, label)   # the knob shows its value itself
         knob.connect("value-changed", self._on_eq, knob.band)
         name = Gtk.Label(label=label)
         name.add_css_class("caption")
@@ -374,7 +375,6 @@ class ChannelStrip(StripWidget):
             if time.monotonic() - self._eq_touched_at > TOUCH_HOLD:
                 for knob in self.eq_knobs:
                     knob.set_value(cs.get(knob.band, 0.0))
-                    knob.set_tooltip_text(f"{knob.band.title()}: {knob.get_value():+.1f} dB")
             self.where.set_visible_child_name("fx" if cs["fx"] else "slots")
         finally:
             self._updating = False
@@ -389,7 +389,6 @@ class ChannelStrip(StripWidget):
             return
         self._eq_touched_at = time.monotonic()
         self._eq_pending[band] = scale.get_value()
-        scale.set_tooltip_text(f"{band.title()}: {scale.get_value():+.1f} dB")
         if self._eq_id is None:
             self._eq_id = GLib.timeout_add(EQ_DELAY_MS, self._eq_timeout)
 
@@ -433,11 +432,31 @@ class EasyEffectsStrip(StripWidget):
             self.slots.show_active(status.get("fx_outputs", []))
 
 
+FX_DELAY_MS = 120  # coalesce Color Panel / Comp / Gate writes while moving them
+
+
 class MicStrip(StripWidget):
-    """The mic: its title is a menu of real microphones (or Automatic)."""
+    """The mic: its title is a menu of real microphones (or Automatic), and
+    VoiceMeeter's hardware-input controls: the Color Panel and Comp / Gate."""
 
     def __init__(self, controller, name):
         super().__init__(controller, name, "source", "Mic")
+        self._fx_pending = {}
+        self._fx_id = None
+        self._fx_touched_at = 0.0
+        from .colorpanel import ColorPanel
+        title = Gtk.Label(label="Color Panel")
+        title.add_css_class("caption")
+        title.add_css_class("dim-label")
+        self.top.append(title)
+        self.color = ColorPanel()
+        self.color.connect("changed", lambda p: self._fx_changed(color_x=p.get_value()[0],
+                                                                color_y=p.get_value()[1]))
+        self.top.append(self.color)
+        knobs = Gtk.Box(spacing=4, homogeneous=True, halign=Gtk.Align.CENTER)
+        self.comp = self._fx_knob(knobs, "Comp", "comp", "Compressor: evens out loud and quiet")
+        self.gate = self._fx_knob(knobs, "Gate", "gate", "Noise gate: hushes the room between words")
+        self.top.append(knobs)
         self.heading.set_visible(False)
         self.menu = MenuButton("Mic")
         self.menu.set_margin_top(6)
@@ -451,16 +470,60 @@ class MicStrip(StripWidget):
         self.device.set_max_width_chars(14)
         self.header.append(self.device)
 
+    def _fx_knob(self, row, label, name, hint):
+        cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        knob = Knob(0, 10, 0.1)
+        tip(knob, hint)
+        knob.connect("value-changed", lambda k: self._fx_changed(**{name: k.get_value()}))
+        caption = Gtk.Label(label=label)
+        caption.add_css_class("caption")
+        caption.add_css_class("dim-label")
+        cell.append(knob)
+        cell.append(caption)
+        row.append(cell)
+        return knob
+
+    def _fx_changed(self, **values):
+        if self._updating:
+            return
+        self._fx_touched_at = time.monotonic()
+        self._fx_pending.update(values)
+        if self._fx_id is None:
+            self._fx_id = GLib.timeout_add(FX_DELAY_MS, self._fx_timeout)
+
+    def _fx_timeout(self):
+        self._fx_id = None
+        self.flush_fx()
+        return False
+
+    def flush_fx(self):
+        """Apply pending Color Panel / Comp / Gate changes now."""
+        if self._fx_id is not None:
+            GLib.source_remove(self._fx_id)
+            self._fx_id = None
+        pending, self._fx_pending = self._fx_pending, {}
+        if pending:
+            self.controller.set_mic_fx(**pending)
+
     def update(self, live, status=None):
         super().update(live, status)
         if not status:
             return
+        fx = status.get("mic_fx")
+        if fx and time.monotonic() - self._fx_touched_at > TOUCH_HOLD:
+            self._updating = True
+            try:
+                self.color.set_value(fx["color_x"], fx["color_y"])
+                self.comp.set_value(fx["comp"])
+                self.gate.set_value(fx["gate"])
+            finally:
+                self._updating = False
         mics = [d for d in status.get("devices", []) if d["kind"] == "mic"]
         names = {d["name"]: d["description"] or d["name"] for d in mics}
         mic = status.get("mic", {})
         picked = names.get(mic.get("device"), mic.get("device") or "none")
         self.device.set_label(("Auto · " if mic.get("value") == "@auto" else "") + picked)
-        self.device.set_tooltip_text(picked)
+        tip(self.device, picked)
         self.menu.set_items([("Automatic", lambda: self.controller.command(["mic", "auto"]))]
                             + [(names[d["name"]], lambda n=d["name"]: self.controller.command(["mic", n]))
                                for d in mics])
