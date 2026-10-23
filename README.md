@@ -63,8 +63,9 @@ level in %. From left to right:
   after the audio engine restarts (the window offers to do that).
 - **Outputs** (top row): choose which device A1–A4 are. "Default output"
   follows your headset when you plug it in.
-- **Playing now** (bottom): every app making sound. Click a channel to move the
-  app there — for good. New apps are marked **NEW**.
+- **Playing now** (bottom, in both the full and the compact view): every app
+  making sound, with its level. Click a channel to move the app there — for
+  good. New apps are marked **NEW**.
 
 ### Your mic: Color Panel, Comp and Gate
 
@@ -84,7 +85,8 @@ All of it runs inside PipeWire itself — no plugins, no extra programs.
 
 Make the window smaller — narrower or shorter — and everything shrinks with
 it, step by step, with no scroll bars. Make it really small and it turns into
-a compact mixer for a corner of your screen:
+a compact mixer for a corner of your screen, with everything that's playing
+listed underneath — click an app's channel to move it:
 
 <img src="docs/images/mixer-window-compact.png" alt="The compact view" width="300">
 
