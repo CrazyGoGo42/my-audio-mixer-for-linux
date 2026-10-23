@@ -57,5 +57,26 @@ class ParseDumpTest(unittest.TestCase):
                              ({}, {}, set(), None, None))
 
 
+class DumpDocumentsTest(unittest.TestCase):
+    """While the graph changes, pw-dump appends update documents after the main
+    array ({"id": N, "info": null} = removed). Seen live: 18 of 30 dumps."""
+
+    def test_trailing_updates_are_applied_not_fatal(self):
+        import json
+        from audiomixer.pwgraph import merge_dump_documents
+        main = [node(1, "Music_Audio", "Audio/Sink"), node(2, "gone", "Audio/Sink")]
+        text = (json.dumps(main) + "\n" + json.dumps([{"id": 2, "info": None}]) + "\n"
+                + json.dumps([node(3, "new_one", "Audio/Sink")]) + "\n"
+                + json.dumps([node(1, "Music_Audio", "Audio/Sink", {"x": 1})]))
+        merged = merge_dump_documents(text)
+        self.assertEqual(sorted(o["id"] for o in merged), [1, 3])
+        self.assertEqual(next(o for o in merged if o["id"] == 1)["info"]["props"]["x"], 1)
+
+    def test_garbage_gives_nothing(self):
+        from audiomixer.pwgraph import merge_dump_documents
+        self.assertEqual(merge_dump_documents(""), [])
+        self.assertEqual(merge_dump_documents("not json"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

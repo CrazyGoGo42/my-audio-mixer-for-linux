@@ -84,10 +84,35 @@ def parse_dump(dump):
     return g
 
 
+def merge_dump_documents(text):
+    """pw-dump's objects. While the graph is changing it appends update arrays
+    after the main one ({"id": N, "info": null} = removed, else added/changed);
+    apply them in order instead of rejecting the whole dump."""
+    decoder = json.JSONDecoder()
+    objects, pos = {}, 0
+    while True:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        try:
+            doc, pos = decoder.raw_decode(text, pos)
+        except ValueError:
+            break
+        for obj in doc if isinstance(doc, list) else []:
+            if not isinstance(obj, dict) or "id" not in obj:
+                continue
+            if obj.get("info") is None and "type" not in obj:
+                objects.pop(obj["id"], None)
+            else:
+                objects[obj["id"]] = obj
+    return list(objects.values())
+
+
 def read_graph():
     """The live graph, or an empty one if pw-dump fails."""
     try:
         out = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=10).stdout
-        return parse_dump(json.loads(out))
-    except (OSError, ValueError, subprocess.SubprocessError):
+        return parse_dump(merge_dump_documents(out))
+    except (OSError, subprocess.SubprocessError):
         return Graph()
