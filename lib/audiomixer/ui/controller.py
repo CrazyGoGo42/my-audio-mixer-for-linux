@@ -15,7 +15,7 @@ import time
 
 from gi.repository import GLib
 
-from .. import apps, commands, easyeffects, live
+from .. import apps, commands, easyeffects, hotkeys, live
 from ..config import STATE_FILE, load_state, update_state
 from ..meters import die_with_parent
 from ..pwgraph import read_graph
@@ -56,7 +56,8 @@ def _run(argv):
 
 class Controller:
     def __init__(self, channels, read_snapshot=None, read_status=None, run=None, run_command=None,
-                 remember=None, route_now=None, update_state=None):
+                 remember=None, route_now=None, update_state=None,
+                 load_hotkeys=None, save_hotkeys=None, apply_hotkeys=None, remove_hotkeys=None):
         self.channels = channels
         self._read_snapshot = read_snapshot or live.read_snapshot
         self._read_status = read_status or globals()["read_status"]
@@ -65,6 +66,12 @@ class Controller:
         self._remember = remember or apps.remember
         self._route_now = route_now or apps.route_now
         self._update_state = update_state or (lambda change: globals()["update_state"](self.channels, change))
+        bin_dir = os.path.expanduser("~/.local/bin")
+        self._load_hotkeys = load_hotkeys or (lambda: hotkeys.load(self.channels))
+        self._save_hotkeys = save_hotkeys or hotkeys.save
+        self._apply_hotkeys = apply_hotkeys or (
+            lambda keys: hotkeys.apply_to_gnome(hotkeys.bindings(keys, bin_dir, self.channels)))
+        self._remove_hotkeys = remove_hotkeys or hotkeys.remove_from_gnome
         self.snapshot = live.Snapshot()
         self.status = None
         self.views = []
@@ -123,6 +130,24 @@ class Controller:
         except ValueError:
             pass
         self.refresh(status_too=True)
+
+    # --------------------------------------------------------------- hotkeys
+    def hotkey_map(self):
+        return self._load_hotkeys()
+
+    def set_hotkey(self, action, accel):
+        """Give `action` this combination (None clears it): saved and live at once."""
+        keys = hotkeys.assign(self._load_hotkeys(), action, accel)
+        self._save_hotkeys(keys)
+        self._apply_hotkeys(keys)
+        return keys
+
+    def suspend_hotkeys(self):
+        """While the user presses a new combination, GNOME must not grab it."""
+        self._remove_hotkeys()
+
+    def resume_hotkeys(self):
+        self._apply_hotkeys(self._load_hotkeys())
 
     def confirm_app(self, row):
         """A NEW app is fine where it is: remember that, move nothing."""

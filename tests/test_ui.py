@@ -65,7 +65,16 @@ class UiTestBase(unittest.TestCase):
         self.status = status()
         self.calls, self.commands = [], []
         self.moves = []
+        self.keys = {"music:mute": "<Ctrl>KP_3", "music:down": "<Ctrl>KP_6", "music:up": "<Ctrl>KP_9"}
+        self.hk_log = []
+
+        def save_keys(keys):
+            self.hk_log.append(("save", dict(keys)))
+            self.keys = dict(keys)
         self.controller = Controller(CHS, read_snapshot=lambda ch: self.snap,
+                                     load_hotkeys=lambda: dict(self.keys), save_hotkeys=save_keys,
+                                     apply_hotkeys=lambda keys: self.hk_log.append(("apply", dict(keys))),
+                                     remove_hotkeys=lambda: self.hk_log.append(("suspend",)),
                                      read_status=lambda ch: self.status,
                                      run=self.calls.append, run_command=self.commands.append,
                                      remember=lambda props, sink: self.moves.append(("remember", props["application.process.binary"], sink)),
@@ -477,3 +486,74 @@ class MeterRecoveryTest(UiTestBase):
         self.controller.refresh()
         self.meters.start()
         self.assertEqual(self.running("--device=Browser_Audio.monitor"), [])
+
+
+class HotkeyEditorTest(UiTestBase):
+    def popover(self, strip_name, control):
+        pop = self.strip(strip_name).hotkey_popover(control)
+        self.addCleanup(pop.unparent)
+        return pop
+
+    def test_right_click_targets(self):
+        self.assertEqual(self.strip("Music_Audio").hotkey_actions("mute"), ["music:mute"])
+        self.assertEqual(self.strip("Music_Audio").hotkey_actions("fader"), ["music:down", "music:up"])
+        self.assertEqual(self.strip("Music_Audio").hotkey_actions("A2"), ["music:A2"])
+        self.assertEqual(self.strip("EE_Return").hotkey_actions("A1"), ["fx:A1"])
+        self.assertEqual(self.strip("Mic_In").hotkey_actions("mute"), ["mic:mute"])
+        self.assertEqual(self.strip("All_Audio").hotkey_actions("fader"), ["all:down", "all:up"])
+
+    def test_popover_lists_current_keys(self):
+        pop = self.popover("Music_Audio", "fader")
+        self.assertEqual([r.action for r in pop.rows], ["music:down", "music:up"])
+        self.assertIn("6", pop.rows[0].keys_label.get_label())
+        self.assertEqual(self.popover("Mic_In", "mute").rows[0].keys_label.get_label(), "—")
+
+    def test_capture_suspends_and_escape_restores(self):
+        from gi.repository import Gdk
+        pop = self.popover("Music_Audio", "mute")
+        pop.start_capture("music:mute")
+        self.assertEqual(self.hk_log, [("suspend",)])
+        self.assertTrue(pop.handle_key(Gdk.KEY_Escape, 0))
+        self.assertIsNone(pop.capturing)
+        self.assertEqual(self.hk_log[-1], ("apply", {"music:mute": "<Ctrl>KP_3", "music:down": "<Ctrl>KP_6",
+                                                     "music:up": "<Ctrl>KP_9"}))
+
+    def test_capture_saves_and_applies(self):
+        from gi.repository import Gdk, Gtk
+        mods = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK
+        pop = self.popover("Mic_In", "mute")
+        pop.start_capture("mic:mute")
+        pop.handle_key(Gdk.KEY_m, mods)
+        self.assertEqual(self.keys["mic:mute"], Gtk.accelerator_name(Gdk.KEY_m, mods))
+        self.assertEqual(self.hk_log[-1][0], "apply")
+        self.assertIsNone(pop.capturing)
+        self.assertIn("M", pop.rows[0].keys_label.get_label())
+
+    def test_unacceptable_key_keeps_capturing(self):
+        from gi.repository import Gdk
+        pop = self.popover("Mic_In", "mute")
+        pop.start_capture("mic:mute")
+        pop.handle_key(Gdk.KEY_m, 0)
+        self.assertEqual(pop.capturing, "mic:mute")
+        self.assertTrue(pop.message.get_visible())
+        self.assertNotIn("mic:mute", self.keys)
+
+    def test_modifier_alone_waits_for_the_real_key(self):
+        from gi.repository import Gdk
+        pop = self.popover("Mic_In", "mute")
+        pop.start_capture("mic:mute")
+        pop.handle_key(Gdk.KEY_Control_L, Gdk.ModifierType.CONTROL_MASK)
+        self.assertEqual(pop.capturing, "mic:mute")
+
+    def test_clear_removes_the_key(self):
+        pop = self.popover("Music_Audio", "mute")
+        pop.clear("music:mute")
+        self.assertNotIn("music:mute", self.keys)
+        self.assertEqual(pop.rows[0].keys_label.get_label(), "—")
+
+    def test_closing_while_capturing_restores_shortcuts(self):
+        pop = self.popover("Music_Audio", "mute")
+        pop.start_capture("music:mute")
+        pop.emit("closed")
+        self.assertIsNone(pop.capturing)
+        self.assertEqual(self.hk_log[-1][0], "apply")

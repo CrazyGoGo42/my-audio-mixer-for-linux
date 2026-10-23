@@ -13,6 +13,9 @@ def guard_wheel(scale, owner):
     scale.add_controller(wheel)
 
 
+SPECIAL_TARGETS = {"Mic_In": "mic", "EE_Return": "fx", "All_Audio": "all"}
+
+
 # After the user touches a slider, live refreshes leave it alone this long, so
 # the echo of their own (or an older) value can't yank it back mid-drag.
 TOUCH_HOLD = 0.6
@@ -53,6 +56,11 @@ class StripWidget(Gtk.Box):
         self.percent.add_css_class("numeric")
         self.mute = Gtk.ToggleButton(label="Mute")
         self.mute.connect("toggled", self._on_mute_toggled)
+        # Right-click a control to set its hotkey.
+        self.target = SPECIAL_TARGETS.get(name) or next(
+            (c.key for c in controller.channels if c.sink == name), name)
+        self.right_click(self.mute, "mute")
+        self.right_click(self.scale, "fader")
         if compact:
             self._build_compact()
         else:
@@ -151,6 +159,30 @@ class StripWidget(Gtk.Box):
         if self._pending is not None:
             value, self._pending = self._pending, None
             self.controller.set_volume(self.name, self.kind, value, unmute=self.unmute_on_change)
+
+    # -------------------------------------------------------------- hotkeys
+    def hotkey_actions(self, control):
+        """The hotkey actions behind a control: mute, fader (down + up) or a slot."""
+        if control == "fader":
+            return [f"{self.target}:down", f"{self.target}:up"]
+        return [f"{self.target}:{control}"]
+
+    def hotkey_popover(self, control):
+        from .. import hotkeys
+        from .hotkeys import HotkeyPopover
+        labels = dict(hotkeys.actions(self.controller.channels))
+        widget = {"mute": self.mute, "fader": self.scale}.get(control)
+        if widget is None:
+            widget = self.slot_toggles[int(control[1]) - 1]
+        popover = HotkeyPopover(self.controller, [(a, labels.get(a, a)) for a in self.hotkey_actions(control)])
+        popover.set_parent(widget)
+        popover.connect("closed", lambda p: GLib.idle_add(lambda: p.unparent() or False))
+        return popover
+
+    def right_click(self, widget, control):
+        click = Gtk.GestureClick(button=3)
+        click.connect("pressed", lambda *_: self.hotkey_popover(control).popup())
+        widget.add_controller(click)
 
     def on_scroll(self, _controller, _dx, dy, scale=None):
         scale = scale or self.scale
@@ -264,6 +296,8 @@ class ChannelStrip(StripWidget):
         self.slots = _SlotToggles(lambda slot, on: controller.command(
             ["out", self.key, slot, "on" if on else "off"]))
         self.slot_toggles = self.slots.toggles
+        for slot, toggle in zip(SLOTS, self.slot_toggles):
+            self.right_click(toggle, slot)
         self.where.add_named(self.slots, "slots")
         self.bottom.append(self.where)
 
@@ -345,6 +379,8 @@ class EasyEffectsStrip(StripWidget):
         self.slots = _SlotToggles(lambda slot, on: controller.command(
             ["out", "fx", slot, "on" if on else "off"]))
         self.slot_toggles = self.slots.toggles
+        for slot, toggle in zip(SLOTS, self.slot_toggles):
+            self.right_click(toggle, slot)
         self.bottom.append(self.slots)
 
     def update(self, live, status=None):
