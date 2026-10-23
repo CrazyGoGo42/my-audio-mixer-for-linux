@@ -1,50 +1,62 @@
 #!/bin/bash
-# Audio channel control — mute / volume up / volume down per virtual sink.
-# Usage: audio-channel-control <channel> <action>
-#   channel: a key from ~/.config/audio-mixer/channels.conf (games, discord, ...)
-#   action:  mute | up | down
+# Audio channel control — mute / volume up / volume down for one mixer strip.
+# Usage: audio-channel-control <target> <action>
+#   target: a channel key from ~/.config/audio-mixer/channels.conf (default,
+#           discord, ...), or mic (the Mixer Mic), fx (the EasyEffects strip),
+#           all (All Audio)
+#   action: mute | up | down
 #
-# Volume is applied directly to the virtual sink. Because every app plays
-# through one of these sinks, each channel's level is fully independent of the
-# others and of the hardware slider. The current level is always read from the
-# sink itself, so a change made anywhere else (pavucontrol, GNOME Settings) is
-# where the next keypress continues from.
+# Volume is applied directly to the strip's node, so each strip's level is
+# independent of the others and of the hardware slider. The current level is
+# always read from the node itself, so a change made anywhere else (the mixer
+# window, pavucontrol, GNOME Settings) is where the next keypress continues
+# from. The hotkeys call this; it's a small bash script so held keys stay fast.
 
 STEP=1
-FIFO="/tmp/audio-osd.fifo"
+FIFO="${AUDIO_OSD_FIFO:-/tmp/audio-osd.fifo}"
 CHANNELS="$HOME/.config/audio-mixer/channels.conf"
 
-# channel key -> sink name + label (label is the rest of the line after 5 columns)
-read -r SINK L < <(awk -v k="$1" '{ sub(/#.*/, "") }
-    NF >= 6 && $1 == k { l = $6; for (i = 7; i <= NF; i++) l = l " " $i; print $2, l; exit }' \
-    "$CHANNELS" 2>/dev/null)
+KIND=sink      # sink or source
+UNMUTE=1       # changing the level unmutes — except the mic, which must
+               # never go live by itself
+case "$1" in
+    mic) SINK="Mic_In";    L="Mic";         KIND=source; UNMUTE=0 ;;
+    fx)  SINK="EE_Return"; L="EasyEffects" ;;
+    all) SINK="All_Audio"; L="All Audio";   KIND=source ;;
+    *)
+        # channel key -> sink name + label (label is the rest of the line after 5 columns)
+        read -r SINK L < <(awk -v k="$1" '{ sub(/#.*/, "") }
+            NF >= 6 && $1 == k { l = $6; for (i = 7; i <= NF; i++) l = l " " $i; print $2, l; exit }' \
+            "$CHANNELS" 2>/dev/null)
+        ;;
+esac
 [ -z "$SINK" ] && exit 1
 
 # Auto-start OSD daemon if its pipe is missing.
 [ ! -p "$FIFO" ] && { nohup "$HOME/.local/bin/audio-osd" >/dev/null 2>&1 & sleep 0.3; }
 
-VOL=$(pactl get-sink-volume "$SINK" 2>/dev/null | grep -oP '/\s*\K[0-9]+(?=%)' | head -1)
-[ -z "$VOL" ] && exit 1   # channel sink not up (PipeWire restarting) — touch nothing
+VOL=$(pactl get-$KIND-volume "$SINK" 2>/dev/null | grep -oP '/\s*\K[0-9]+(?=%)' | head -1)
+[ -z "$VOL" ] && exit 1   # node not up (PipeWire restarting) — touch nothing
 
 case "$2" in
     mute)
-        pactl set-sink-mute "$SINK" toggle
-        if pactl get-sink-mute "$SINK" | grep -q yes; then
+        pactl set-$KIND-mute "$SINK" toggle
+        if pactl get-$KIND-mute "$SINK" | grep -q yes; then
             echo "$L muted" > "$FIFO" &
         else
             echo "$L ${VOL}%" > "$FIFO" &
         fi
         ;;
     down)
-        pactl set-sink-mute "$SINK" 0
+        [ "$UNMUTE" = 1 ] && pactl set-$KIND-mute "$SINK" 0
         VOL=$((VOL - STEP)); [ "$VOL" -lt 0 ] && VOL=0
-        pactl set-sink-volume "$SINK" "${VOL}%" 2>/dev/null
+        pactl set-$KIND-volume "$SINK" "${VOL}%" 2>/dev/null
         echo "$L ${VOL}%" > "$FIFO" &
         ;;
     up)
-        pactl set-sink-mute "$SINK" 0
+        [ "$UNMUTE" = 1 ] && pactl set-$KIND-mute "$SINK" 0
         VOL=$((VOL + STEP)); [ "$VOL" -gt 100 ] && VOL=100
-        pactl set-sink-volume "$SINK" "${VOL}%" 2>/dev/null
+        pactl set-$KIND-volume "$SINK" "${VOL}%" 2>/dev/null
         echo "$L ${VOL}%" > "$FIFO" &
         ;;
 esac
