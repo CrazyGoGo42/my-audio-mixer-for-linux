@@ -53,7 +53,7 @@ from audiomixer.config import (  # noqa: E402
 )
 from audiomixer import apps, hotkeys  # noqa: E402
 from audiomixer.pwgraph import read_graph  # noqa: E402
-from audiomixer.reconcile import apply_eq, reconcile_once  # noqa: E402
+from audiomixer.reconcile import apply_eq, apply_mic_fx, reconcile_once  # noqa: E402
 from audiomixer.routing import own_nodes  # noqa: E402
 
 PID_FILE = "/tmp/audio-router-daemon.pid"
@@ -256,8 +256,8 @@ def tick(graph=None):
 
 
 def _patch(graph):
-    """Relink whatever drifted, and re-apply Bass/Treble when the channel nodes
-    are new (PipeWire restarted) or mixer.json changed. Idempotent."""
+    """Relink whatever drifted, and re-apply the EQ and the mic's controls when
+    their nodes are new (PipeWire restarted) or mixer.json changed. Idempotent."""
     global eq_seen
     if not graph.nodes:
         return  # PipeWire not reachable right now
@@ -269,9 +269,12 @@ def _patch(graph):
         mtime = os.path.getmtime(STATE_FILE)
     except OSError:
         mtime = None
-    seen = ({c.sink: graph.nodes[c.sink].id for c in CHANNEL_LIST if c.sink in graph.nodes}, mtime)
+    names = [c.sink for c in CHANNEL_LIST] + [MIC_IN + "_in"]
+    seen = ({n: graph.nodes[n].id for n in names if n in graph.nodes}, mtime)
     if seen != eq_seen:
-        apply_eq(graph, CHANNEL_LIST, load_state(CHANNEL_LIST))
+        state = load_state(CHANNEL_LIST)
+        apply_eq(graph, CHANNEL_LIST, state)
+        apply_mic_fx(graph, state)
         eq_seen = seen
 
 

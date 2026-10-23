@@ -8,12 +8,14 @@ The mixer's commands — what `audio-mixer` and the mixer window both do.
 """
 
 import copy
+from dataclasses import asdict
 
 from .config import (
-    AUTO_MIC, DEFAULT_OUTPUT, EQ_BANDS, EQ_LIMIT_DB, SLOTS, load_channels, update_state,
+    AUTO_MIC, DEFAULT_OUTPUT, EQ_BANDS, EQ_LIMIT_DB, MIC_FX_RANGES, SLOTS, load_channels,
+    update_state,
 )
 from .pwgraph import read_graph
-from .reconcile import apply_eq, reconcile_once
+from .reconcile import apply_eq, apply_mic_fx, reconcile_once
 from .routing import hardware_mics, hardware_outputs, own_nodes, pick_mic, resolve_slot
 
 
@@ -79,6 +81,17 @@ def apply_command(argv, channels, state):
         setattr(cs, args[1], max(-EQ_LIMIT_DB, min(EQ_LIMIT_DB, db)))
     elif cmd == "mic" and len(args) == 1:
         s.mic = AUTO_MIC if args[0] == "auto" else args[0]
+    elif cmd == "mic" and args and args[0] in ("comp", "gate", "color"):
+        names = ["color_x", "color_y"] if args[0] == "color" else [args[0]]
+        if len(args) != len(names) + 1:
+            raise ValueError("expected: mic color <x -1..1> <y 0..1>" if args[0] == "color"
+                             else f"expected: mic {args[0]} <0-10>")
+        for name, text in zip(names, args[1:]):
+            try:
+                value = float(text)
+            except ValueError:
+                raise ValueError(f"expected a number, not {text!r}") from None
+            setattr(s.mic_fx, name, max(MIC_FX_RANGES[name][0], min(MIC_FX_RANGES[name][1], value)))
     else:
         raise ValueError("unknown command; run `audio-mixer --help`")
     return s
@@ -105,6 +118,7 @@ def status_dict(channels, state, graph):
                      for c in channels],
         "fx_outputs": state.fx_outputs,
         "mic": {"value": state.mic, "device": pick_mic(state, graph, own)},
+        "mic_fx": asdict(state.mic_fx),
     }
 
 
@@ -125,4 +139,6 @@ def run(argv):
     reconcile_once(graph)
     if argv and argv[0] == "eq":
         apply_eq(graph, channels, state)
+    if argv and argv[0] == "mic":
+        apply_mic_fx(graph, state)
     return state

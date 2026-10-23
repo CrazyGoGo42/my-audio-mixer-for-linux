@@ -2,7 +2,8 @@
 The mixer's two config files and the names of the nodes it creates.
 
     channels.conf  the channel list (hand-edited; see config/channels.conf)
-    mixer.json     what the user set: output slots, FX, Bass/Mid/Treble, mic
+    mixer.json     what the user set: output slots, FX, Bass/Mid/Treble, mic and
+                   its Color Panel / Comp / Gate
 
 Both live in ~/.config/audio-mixer/, so audio-mixer-backup covers them.
 Loading is forgiving: anything missing or malformed in mixer.json falls back to
@@ -111,11 +112,21 @@ class ChannelState:
 
 
 @dataclass
+class MicFx:
+    """The Mic strip's VoiceMeeter controls (see audiomixer.micfx)."""
+    color_x: float = 0.0   # Color Panel: -1 Lo .. 1 Hi
+    color_y: float = 0.0   # 0 (flat) .. 0.5 brightness .. 1 echo
+    comp: float = 0.0      # Audibility knobs, 0 (off) .. 10
+    gate: float = 0.0
+
+
+@dataclass
 class MixerState:
     slots: dict[str, str | None]
     channels: dict[str, ChannelState]
     fx_outputs: list[str]
     mic: str
+    mic_fx: MicFx = field(default_factory=MicFx)
 
 
 def _slot_list(value, default):
@@ -128,6 +139,15 @@ def _db(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     return float(max(-EQ_LIMIT_DB, min(EQ_LIMIT_DB, value)))
+
+
+def _number(value, low, high):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(max(low, min(high, value)))
+
+
+MIC_FX_RANGES = {"color_x": (-1.0, 1.0), "color_y": (0.0, 1.0), "comp": (0.0, 10.0), "gate": (0.0, 10.0)}
 
 
 def load_state(channels, path=STATE_FILE):
@@ -160,7 +180,9 @@ def load_state(channels, path=STATE_FILE):
         )
 
     mic = data.get("mic") if isinstance(data.get("mic"), str) else AUTO_MIC
-    return MixerState(slots, states, _slot_list(data.get("fx_outputs"), ["A1"]), mic)
+    raw_fx = data.get("mic_fx") if isinstance(data.get("mic_fx"), dict) else {}
+    mic_fx = MicFx(**{k: _number(raw_fx.get(k), *r) for k, r in MIC_FX_RANGES.items()})
+    return MixerState(slots, states, _slot_list(data.get("fx_outputs"), ["A1"]), mic, mic_fx)
 
 
 def update_state(channels, change, path=STATE_FILE):

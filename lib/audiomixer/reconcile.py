@@ -7,7 +7,8 @@ touched.
 
 import subprocess
 
-from .config import EQ_BANDS, load_channels, load_state
+from . import micfx
+from .config import EQ_BANDS, MIC_IN, load_channels, load_state
 from .pwgraph import read_graph
 from .routing import desired_links, managed_nodes
 
@@ -55,6 +56,18 @@ def apply_eq(graph, channels, state):
                            capture_output=True, timeout=5)
         except (OSError, subprocess.SubprocessError):
             pass
+
+
+def apply_mic_fx(graph, state):
+    """Set the Mic strip's Color Panel and Comp/Gate live (controls on Mic_In_in)."""
+    node = graph.nodes.get(MIC_IN + "_in")
+    if node is None:
+        return
+    try:
+        subprocess.run(["pw-cli", "set-param", str(node.id), "Props", micfx.props(state.mic_fx)],
+                       capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def reconcile_once(graph=None):

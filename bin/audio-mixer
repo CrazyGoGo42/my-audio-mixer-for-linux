@@ -10,8 +10,12 @@ audio-mixer — control the mixer from the command line (the window uses it too)
                                                 the EasyEffects strip, "fx") plays on
     audio-mixer slot <A1-A4> <device>|default|none
                                                 which device a slot is
-    audio-mixer eq <channel> bass|treble <dB>   -12 … +12, 0 = flat
+    audio-mixer eq <channel> bass|mid|treble <dB>
+                                                -12 … +12, 0 = flat
     audio-mixer mic auto|<device>               which real mic feeds EasyEffects
+    audio-mixer mic comp|gate <0-10>            the mic's compressor / noise gate (0 = off)
+    audio-mixer mic color <x> <y>               the Color Panel: x -1 (Lo) … 1 (Hi),
+                                                y 0 … 1 (brightness, then echo)
     audio-mixer hotkeys list|apply              your hotkeys (~/.config/audio-mixer/hotkeys.json)
     audio-mixer hotkeys set <action> <keys>     e.g. set mic:mute "<Ctrl><Alt>m"
     audio-mixer hotkeys clear <action>
