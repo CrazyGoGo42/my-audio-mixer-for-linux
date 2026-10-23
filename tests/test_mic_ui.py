@@ -39,6 +39,45 @@ class ColorPanelTest(UiTestBase):
         self.assertEqual(panel.get_value(), (0.05, 0.1))
 
 
+class DoubleClickTest(UiTestBase):
+    """A double-click is two presses, and each press also starts a drag. The
+    reset must win, whichever order GTK delivers them in (seen live: the second
+    press moved the square to the pointer, leaving x = -0.01, lit as "on")."""
+
+    def test_double_click_lands_exactly_on_flat_in_the_color_panel(self):
+        from audiomixer.ui.colorpanel import ColorPanel
+        for order in ("drag first", "click first"):
+            with self.subTest(order):
+                panel = ColorPanel()
+                panel.set_value(0.6, 0.9)
+                panel.begin_drag(80, 20, 100, 100)        # first press
+                panel.end_drag()
+                if order == "drag first":
+                    panel.begin_drag(49, 98, 100, 100)    # second press, near the middle
+                    panel.double_click()
+                else:
+                    panel.double_click()
+                    panel.begin_drag(49, 98, 100, 100)
+                panel.drag_to(1, -1, 100, 100)            # a hand never stays perfectly still
+                panel.end_drag()
+                self.assertEqual(panel.get_value(), (0.0, 0.0))
+                panel.begin_drag(75, 50, 100, 100)        # and dragging works again after
+                self.assertEqual(panel.get_value(), (0.5, 0.5))
+
+    def test_double_click_lands_exactly_on_flat_on_a_knob(self):
+        from audiomixer.ui.knob import Knob
+        knob = Knob(-12, 12, 0.5)
+        knob.set_value(6)
+        knob.drag_begin()
+        knob.double_click()
+        knob.drag_update(0, -2)                          # a pixel of jitter
+        knob.drag_end()
+        self.assertEqual(knob.get_value(), 0)
+        knob.drag_begin()
+        knob.drag_update(0, -20)
+        self.assertEqual(knob.get_value(), 3)
+
+
 class UnsignedKnobTest(UiTestBase):
     def test_comp_and_gate_knobs_count_from_zero(self):
         from audiomixer.ui.knob import Knob

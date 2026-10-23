@@ -39,10 +39,13 @@ class Knob(Gtk.DrawingArea):
         drag = Gtk.GestureDrag()
         drag.connect("drag-begin", lambda *_: self.drag_begin())
         drag.connect("drag-update", lambda _g, dx, dy: self.drag_update(dx, dy))
+        drag.connect("drag-end", lambda *_: self.drag_end())
         self.add_controller(drag)
         click = Gtk.GestureClick()
-        click.connect("pressed", lambda _g, n, *_: self.reset() if n == 2 else None)
+        click.connect("pressed", lambda _g, n, *_: self.double_click() if n == 2 else None)
+        click.connect("released", lambda *_: self.drag_end())
         self.add_controller(click)
+        self._resetting = False
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
@@ -79,8 +82,19 @@ class Knob(Gtk.DrawingArea):
         self._drag_from = self._value
 
     def drag_update(self, dx, dy):
+        if self._resetting:
+            return
         span = self.upper - self.lower
         self.set_value(self._drag_from + (dx - dy) * span / DRAG_PIXELS)
+
+    def drag_end(self):
+        self._resetting = False
+
+    def double_click(self):
+        """Back to the start; a double-click's second press also starts a drag,
+        and the slightest jitter in it must not turn the knob back."""
+        self._resetting = True
+        self.reset()
 
     def _on_key(self, _ctl, keyval, _code, _state):
         steps = {Gdk.KEY_Up: 1, Gdk.KEY_Right: 1, Gdk.KEY_Down: -1, Gdk.KEY_Left: -1,

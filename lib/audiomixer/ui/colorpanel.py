@@ -34,12 +34,15 @@ class ColorPanel(Gtk.DrawingArea):
         self.set_draw_func(self._draw)
         tip(self, "Color Panel — Lo/Hi: the voice's tone; up: brightness, then echo. Double-click: flat")
         drag = Gtk.GestureDrag()
-        drag.connect("drag-begin", self._on_drag_begin)
-        drag.connect("drag-update", self._on_drag_update)
+        drag.connect("drag-begin", lambda _g, x, y: self.begin_drag(x, y, self.get_width(), self.get_height()))
+        drag.connect("drag-update", lambda _g, dx, dy: self.drag_to(dx, dy, self.get_width(), self.get_height()))
+        drag.connect("drag-end", lambda *_: self.end_drag())
         self.add_controller(drag)
         click = Gtk.GestureClick()
-        click.connect("pressed", lambda _g, n, *_: self.reset() if n == 2 else None)
+        click.connect("pressed", lambda _g, n, *_: self.double_click() if n == 2 else None)
+        click.connect("released", lambda *_: self.end_drag())
         self.add_controller(click)
+        self._resetting = False
         keys = Gtk.EventControllerKey()
         keys.connect("key-pressed", self._on_key)
         self.add_controller(keys)
@@ -63,14 +66,27 @@ class ColorPanel(Gtk.DrawingArea):
     def nudge(self, dx, dy):
         self.set_value(self._x + dx * STEP, self._y + dy * STEP)
 
-    def _on_drag_begin(self, _gesture, px, py):
-        self.grab_focus()
+    # A double-click is two presses, and each press also starts a drag: the
+    # reset must win whichever comes first, so after it the rest of that press
+    # moves nothing (seen live: the second press left x at -0.01).
+    def begin_drag(self, px, py, width, height):
+        """A press: the square jumps to the pointer."""
         self._start = (px, py)
-        self.set_value(*value_at(px, py, self.get_width(), self.get_height()))
+        if not self._resetting:
+            self.grab_focus()
+            self.set_value(*value_at(px, py, width, height))
 
-    def _on_drag_update(self, _gesture, dx, dy):
-        sx, sy = self._start
-        self.set_value(*value_at(sx + dx, sy + dy, self.get_width(), self.get_height()))
+    def drag_to(self, dx, dy, width, height):
+        if not self._resetting:
+            sx, sy = self._start
+            self.set_value(*value_at(sx + dx, sy + dy, width, height))
+
+    def end_drag(self):
+        self._resetting = False
+
+    def double_click(self):
+        self._resetting = True
+        self.reset()
 
     def _on_key(self, _ctl, keyval, _code, _state):
         moves = {Gdk.KEY_Left: (-1, 0), Gdk.KEY_Right: (1, 0), Gdk.KEY_Up: (0, 1), Gdk.KEY_Down: (0, -1)}
