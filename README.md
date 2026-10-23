@@ -13,8 +13,10 @@ apart.
 ## What you get
 
 - **Four separate channels** — Desktop (games and everything else), Discord,
-  Music and Browser — each with its own volume, mute, Bass and Treble.
-- **Your mic on its own strip**, through EasyEffects if you like.
+  Music and Browser — each with its own volume, mute and Treble / Mid / Bass.
+  **Rename them** to whatever you route there.
+- **Your mic on its own strip** with VoiceMeeter's **Color Panel** (tone,
+  brightness, echo) and **Comp / Gate** knobs, then through EasyEffects.
 - **Apps land on the right channel by themselves.** New ones go to Desktop and
   you pick their channel once, in the window.
 - **Outputs A1–A4**: send any channel to your speakers, headset, HDMI… or
@@ -48,24 +50,41 @@ level in %. From left to right:
 
 | Strip           | What it's for                                                                 |
 | --------------- | ----------------------------------------------------------------------------- |
-| **Mic**         | Your microphone. Click its name to pick a different mic.                      |
-| **Channels**    | **FX** on = through EasyEffects, off = plays dry on its own **A1–A4** outputs. |
+| **Mic**         | Your microphone, with the Color Panel and Comp / Gate. Click its name to pick a different mic. |
+| **Channels**    | **FX** on = through EasyEffects, off = plays dry on its own **A1–A4** outputs. Treble / Mid / Bass. |
 | **EasyEffects** | Everything with FX on, after your EasyEffects preset, and where it plays.     |
 | **All Audio**   | All channels mixed — pick it as an input in OBS (it doesn't include your mic). |
 
-- **Bass and Treble knobs** (±12 dB): drag up or down to turn them,
+- **Treble, Mid and Bass knobs** (±12 dB): drag up or down to turn them,
   double-click to set them back to 0. Click one first and the mouse wheel or
   arrow keys turn it too.
+- **Rename a channel**: right-click its name, type, Enter. Only the name
+  changes — its apps, hotkeys and settings stay. Other apps see the new name
+  after the audio engine restarts (the window offers to do that).
 - **Outputs** (top row): choose which device A1–A4 are. "Default output"
   follows your headset when you plug it in.
 - **Playing now** (bottom): every app making sound. Click a channel to move the
   app there — for good. New apps are marked **NEW**.
 
+### Your mic: Color Panel, Comp and Gate
+
+Like VoiceMeeter's mic strips:
+
+- **Color Panel** — drag the square. Left warms your voice up (**Lo**), right
+  makes it thinner and clearer (**Hi**). Up adds **brightness**; past the line
+  it adds an **echo** too. Double-click puts it back in the middle (no change).
+- **Comp** evens out loud and quiet (0 = off, 10 = a lot), and keeps your
+  normal speaking level about the same.
+- **Gate** hushes the room between your words (0 = off; higher = only louder
+  sounds get through).
+
+All of it runs inside PipeWire itself — no plugins, no extra programs.
+
 ### It fits any size
 
-Make the window smaller and everything shrinks with it, step by step — no
-scroll bars. Make it narrow (or short) and it turns into a compact mixer for a
-corner of your screen:
+Make the window smaller — narrower or shorter — and everything shrinks with
+it, step by step, with no scroll bars. Make it really small and it turns into
+a compact mixer for a corner of your screen:
 
 <img src="docs/images/mixer-window-compact.png" alt="The compact view" width="300">
 
@@ -93,12 +112,12 @@ output. A small overlay shows each change on screen.
 
 The defaults:
 
-| Channel | What goes here                      | Mute          | Volume down | Volume up   |
+| Channel (default name) | What goes here      | Mute          | Volume down | Volume up   |
 | ------- | ----------------------------------- | ------------- | ----------- | ----------- |
-| Desktop | Games, wine/proton, everything else | `Ctrl+Num1`   | `Ctrl+Num4` | `Ctrl+Num7` |
-| Discord | Discord                             | `Ctrl+Num2`   | `Ctrl+Num5` | `Ctrl+Num8` |
-| Music   | YouTube Music, Spotify, Plexamp     | `Ctrl+Num3`   | `Ctrl+Num6` | `Ctrl+Num9` |
-| Browser | Chrome, Firefox, Brave, Zen…        | `Ctrl+NumDel` | `Ctrl+Num+` | `Ctrl+Num-` |
+| Desktop  | Games, everything else      | `Ctrl+Num1`   | `Ctrl+Num4` | `Ctrl+Num7` |
+| Discord  | Discord                     | `Ctrl+Num2`   | `Ctrl+Num5` | `Ctrl+Num8` |
+| Music    | YouTube Music, Spotify…     | `Ctrl+Num3`   | `Ctrl+Num6` | `Ctrl+Num9` |
+| Browser  | Chrome, Firefox, Zen…       | `Ctrl+NumDel` | `Ctrl+Num+` | `Ctrl+Num-` |
 
 A muted mic stays muted: changing its level doesn't unmute it, and it's still
 muted after a reboot.
@@ -178,23 +197,27 @@ audio-mixer fx browser off             # Browser plays dry
 audio-mixer slot A2 alsa_output.usb-…  # A2 = the headset
 audio-mixer out browser A2 on          # Browser also plays on A2
 audio-mixer out fx A2 on               # the EasyEffects strip also plays on A2
-audio-mixer eq music bass 6            # +6 dB bass on Music
+audio-mixer eq music bass 6            # +6 dB bass on Music (bass, mid or treble)
 audio-mixer mic auto                   # or a device name from `devices`
+audio-mixer mic comp 3                 # the mic's Comp / Gate, 0-10
+audio-mixer mic color -0.5 0.7         # Color Panel: x -1 (Lo)..1 (Hi), y 0..1
+audio-mixer rename music Podcasts      # a channel's new name
 audio-mixer hotkeys list               # every action and its keys
 audio-mixer hotkeys set mic:mute "<Ctrl><Alt>m"
 audio-mixer restart easyeffects        # or: restart engine
 ```
 
-Your settings live in `~/.config/audio-mixer/`: `mixer.json` (FX, outputs,
-Bass/Treble, mic), `hotkeys.json`, `routes.json` (which app goes where) and
+Your settings live in `~/.config/audio-mixer/`: `channels.conf` (the channels
+and their names), `mixer.json` (FX, outputs, EQ, the mic and its Color Panel /
+Comp / Gate), `hotkeys.json`, `routes.json` (which app goes where) and
 `window.json` (window size and theme).
 </details>
 
 <details>
 <summary><b>Customizing</b></summary>
 
-- **Channels** — add, remove or rename them in
-  `~/.config/audio-mixer/channels.conf`, then run `audio-routes-apply`.
+- **Channels** — add or remove them in `~/.config/audio-mixer/channels.conf`,
+  then run `audio-routes-apply`. (Renaming is easier in the window.)
 - **Volume step per keypress** — `STEP` in `~/.local/bin/audio-channel-control`
   (default 1%).
 - **Overlay position** — `TOP_MARGIN` in `~/.local/bin/audio-osd`.
@@ -206,8 +229,8 @@ Bass/Treble, mic), `hotkeys.json`, `routes.json` (which app goes where) and
 <details>
 <summary><b>How it works</b></summary>
 
-Each channel is a virtual PipeWire sink with its own volume and Bass/Treble
-filters. Apps are placed on their channel **the moment they start** — PipeWire
+Each channel is a virtual PipeWire sink with its own volume and Treble / Mid /
+Bass filters. Apps are placed on their channel **the moment they start** — PipeWire
 is told where each app belongs before its stream exists — so nothing ever
 blasts at full volume on the wrong output, and a restarted player comes back
 on its own channel.
@@ -216,19 +239,19 @@ on its own channel.
   Discord        Spotify        Chrome      games, new apps
      │              │              │                │
      ▼              ▼              ▼                ▼
- Discord_Audio  Music_Audio   Browser_Audio    Default_Audio   ← volume + Bass/Treble
+ Discord_Audio  Music_Audio   Browser_Audio    Default_Audio   ← volume + Treble/Mid/Bass
      │              │              │                │            (Desktop)
      ├── FX on ──► EasyEffects ──► its A1–A4
      ├── FX off ─► the channel's own A1–A4 (speakers, headset, HDMI…)
      └── always ─► All Audio (input for OBS / recorders)
 
-  real mic ──► Mixer Mic ──► EasyEffects (input effects) ──► apps' default mic
+  real mic ──► Mixer Mic (Gate, Comp, Color Panel) ──► EasyEffects ──► apps' default mic
 ```
 
 | Part                    | What it does                                                         |
 | ----------------------- | -------------------------------------------------------------------- |
 | `audio-mixer-window`    | The window (GTK 4 + libadwaita)                                      |
-| `audio-mixer`           | Command line for FX, outputs, Bass/Treble, mic, hotkeys, restarts    |
+| `audio-mixer`           | Command line for FX, outputs, EQ, the mic, names, hotkeys, restarts  |
 | `audio-routes-apply`    | Builds the channel sinks and app routing rules                       |
 | `audio-router-daemon`   | Keeps everything wired, restores levels at login, asks about new apps |
 | `audio-channel-control` | What the hotkeys run                                                  |
