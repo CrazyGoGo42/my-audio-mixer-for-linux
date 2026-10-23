@@ -16,7 +16,7 @@ import time
 from gi.repository import GLib
 
 from .. import apps, commands, easyeffects, hotkeys, live
-from ..config import STATE_FILE, load_state, update_state
+from ..config import STATE_FILE, load_state, rename_channel, update_state
 from ..meters import die_with_parent
 from ..pwgraph import read_graph
 
@@ -78,7 +78,7 @@ class Controller:
     def __init__(self, channels, read_snapshot=None, read_status=None, run=None, run_command=None,
                  remember=None, route_now=None, update_state=None,
                  load_hotkeys=None, save_hotkeys=None, apply_hotkeys=None, remove_hotkeys=None,
-                 hotkeys_suspended=None, spawn=None):
+                 hotkeys_suspended=None, spawn=None, rename=None):
         self.channels = channels
         self._read_snapshot = read_snapshot or live.read_snapshot
         self._read_status = read_status or globals()["read_status"]
@@ -88,6 +88,7 @@ class Controller:
         self._route_now = route_now or apps.route_now
         self._update_state = update_state or (lambda change: globals()["update_state"](self.channels, change))
         self._spawn = spawn or _spawn
+        self._rename = rename or rename_channel
         self._bin_dir = bin_dir = os.path.expanduser("~/.local/bin")
         self._load_hotkeys = load_hotkeys or (lambda: hotkeys.load(self.channels))
         self._save_hotkeys = save_hotkeys or hotkeys.save
@@ -155,6 +156,19 @@ class Controller:
         except ValueError:
             pass
         self.refresh(status_too=True)
+
+    def rename_channel(self, key, label):
+        """Give a channel a new name (ValueError says why one can't be used).
+        The views retitle, GNOME's shortcut names follow, and the device name
+        other apps see is written for the next engine start. Returns the old name."""
+        old = next(c.label for c in self.channels if c.key == key)
+        self.channels = self._rename(key, label)
+        self._try(self.resume_hotkeys)
+        self._spawn([os.path.join(self._bin_dir, "audio-routes-apply"), "--no-restart"])
+        for view in list(self.views):
+            if hasattr(view, "retitle"):
+                view.retitle()
+        return old
 
     def restart(self, what, done):
         """Restart "easyeffects" or the whole audio "engine" in the background;

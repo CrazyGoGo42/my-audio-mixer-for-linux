@@ -80,6 +80,13 @@ class AppsList(Gtk.Box):
         self.append(self.empty)
         self.rows = []
 
+    def retitle(self, channels):
+        """A channel was renamed: relabel its button on every row."""
+        for row in self.rows:
+            row.channels = channels
+            for ch, toggle in zip(channels, row.channel_toggles):
+                toggle.set_label(ch.label)
+
     def update(self, snapshot, status=None):
         apps = snapshot.apps
         if [r.app.key for r in self.rows] != [a.key for a in apps]:

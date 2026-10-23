@@ -13,6 +13,7 @@ slots existed (every channel through EasyEffects to the default output).
 import fcntl
 import json
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass, field
 
@@ -52,6 +53,43 @@ def load_channels(path=CHANNELS_FILE):
                 channels.append(Channel(parts[0], parts[1], " ".join(parts[5:]),
                                         tuple(parts[2:5])))
     return channels
+
+
+# Names the built-in strips (and the hotkeys' targets) already use.
+RESERVED_NAMES = ("mic", "easyeffects", "all audio", "fx", "all")
+MAX_NAME = 20
+# A channel line: key, sink, three hotkeys, then the name (and maybe a comment).
+_CHANNEL_LINE = re.compile(r"^(\s*(\S+)(?:\s+\S+){4}\s+)([^#\n]*?)(\s*(?:#.*)?)$")
+
+
+def rename_channel(key, label, path=CHANNELS_FILE):
+    """Give a channel a new name; key, sink and hotkeys stay. Raises
+    ValueError with a reason a person can read. Returns the new channel list."""
+    label = label.strip()
+    channels = load_channels(path)
+    if not any(c.key == key for c in channels):
+        raise ValueError(f"No channel {key!r}")
+    if not label:
+        raise ValueError("The name can't be empty")
+    if "#" in label or "\n" in label:
+        raise ValueError("The name can't contain #")
+    if len(label) > MAX_NAME:
+        raise ValueError(f"Keep it to {MAX_NAME} characters")
+    taken = {n.lower() for c in channels if c.key != key for n in (c.key, c.label)}
+    if label.lower() in taken or label.lower() in RESERVED_NAMES:
+        raise ValueError(f"There's already a channel called {label}")
+    with open(path) as f:
+        lines = f.read().split("\n")
+    for i, line in enumerate(lines):
+        m = _CHANNEL_LINE.match(line)
+        if m and m.group(2) == key and m.group(3):
+            lines[i] = m.group(1) + label + m.group(4)
+            break
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".channels-", suffix=".tmp")
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines))
+    os.replace(tmp, path)
+    return load_channels(path)
 
 
 def catch_all(channels):

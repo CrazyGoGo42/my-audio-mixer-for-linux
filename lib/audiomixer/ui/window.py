@@ -166,12 +166,28 @@ class MixerWindow(Adw.ApplicationWindow):
         apply_theme(theme)
         save_theme(theme)
 
-    def show_toast(self, text, lasting=False):
+    def show_toast(self, text, lasting=False, button=None):
+        """button: (label, callback) for an action right in the toast."""
         toast = Adw.Toast.new(text)
         if lasting:
             toast.set_timeout(0)   # until it's dismissed
+        if button:
+            toast.set_button_label(button[0])
+            toast.connect("button-clicked", lambda _t, cb=button[1]: cb())
         self.toast_overlay.add_toast(toast)
         return toast
+
+    def retitle(self):
+        """A channel was renamed: every place its name shows."""
+        labels = {c.sink: c.label for c in self.controller.channels}
+        for strip in self.strips + self.compact.strips:
+            if strip.name in labels:
+                strip.set_title(labels[strip.name])
+        self.apps.retitle(self.controller.channels)
+
+    def show_renamed(self, old, new):
+        self.show_toast(f"{old} is now {new}. Other apps see it after an engine restart.",
+                        button=("Restart Now", lambda: self.restart("engine")))
 
     def engine_restart_dialog(self):
         dialog = Adw.AlertDialog.new(

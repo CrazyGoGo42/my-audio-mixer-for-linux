@@ -17,7 +17,8 @@ from .reconcile import apply_eq, reconcile_once
 from .routing import hardware_mics, hardware_outputs, own_nodes, pick_mic, resolve_slot
 
 
-def _channel(channels, name):
+def find_channel(channels, name):
+    """A channel by its key or name, any case."""
     for ch in channels:
         if name.lower() in (ch.key.lower(), ch.label.lower()):
             return ch
@@ -47,7 +48,7 @@ def out_message(argv, channels, state):
     target, slot = argv[1], _slot(argv[2])
     if target.lower() == "fx":
         return f"EasyEffects {slot} {'on' if slot in state.fx_outputs else 'off'}"
-    ch = _channel(channels, target)
+    ch = find_channel(channels, target)
     return f"{ch.label} {slot} {'on' if slot in state.channels[ch.key].outputs else 'off'}"
 
 
@@ -56,19 +57,19 @@ def apply_command(argv, channels, state):
     s = copy.deepcopy(state)
     cmd, args = (argv[0], argv[1:]) if argv else ("", [])
     if cmd == "fx" and len(args) == 2:
-        cs = s.channels[_channel(channels, args[0]).key]
+        cs = s.channels[find_channel(channels, args[0]).key]
         cs.fx = _switch(cs.fx, args[1])
     elif cmd == "out" and len(args) == 3:
         slot = _slot(args[1])
         if args[0].lower() == "fx":
             s.fx_outputs = _set_slot(s.fx_outputs, slot, _switch(slot in s.fx_outputs, args[2]))
         else:
-            cs = s.channels[_channel(channels, args[0]).key]
+            cs = s.channels[find_channel(channels, args[0]).key]
             cs.outputs = _set_slot(cs.outputs, slot, _switch(slot in cs.outputs, args[2]))
     elif cmd == "slot" and len(args) == 2:
         s.slots[_slot(args[0])] = {"default": DEFAULT_OUTPUT, "none": None}.get(args[1], args[1])
     elif cmd == "eq" and len(args) == 3:
-        cs = s.channels[_channel(channels, args[0]).key]
+        cs = s.channels[find_channel(channels, args[0]).key]
         if args[1] not in ("bass", "treble"):
             raise ValueError(f"expected bass or treble, not {args[1]!r}")
         try:

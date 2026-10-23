@@ -64,6 +64,13 @@ class StripWidget(Gtk.Box):
             (c.key for c in controller.channels if c.sink == name), name)
         self.right_click(self.mute, "mute")
         self.right_click(self.scale, "fader")
+        # ... and a channel's name to rename it (the built-in strips keep theirs).
+        self.is_channel = any(c.sink == name for c in controller.channels)
+        if self.is_channel:
+            self.heading.set_tooltip_text("Right-click to rename")
+            click = Gtk.GestureClick(button=3)
+            click.connect("pressed", lambda *_: self.rename_popover().popup())
+            self.heading.add_controller(click)
         if compact:
             self._build_compact()
         else:
@@ -197,6 +204,25 @@ class StripWidget(Gtk.Box):
             self.hotkey_popover(control).popup()
         click.connect("pressed", pressed)
         widget.add_controller(click)
+
+    def set_title(self, title):
+        self.title = title
+        self.heading.set_label(title)
+
+    def rename_popover(self):
+        if not self.is_channel:
+            return None
+        from .rename import RenamePopover
+        popover = RenamePopover(self.title, self._rename)
+        popover.set_parent(self.heading)
+        popover.connect("closed", lambda p: GLib.idle_add(lambda: p.unparent() or False))
+        return popover
+
+    def _rename(self, label):
+        old = self.controller.rename_channel(self.target, label)   # ValueError: stays in the box
+        root = self.get_root()
+        if hasattr(root, "show_renamed"):
+            root.show_renamed(old, label.strip())
 
     def on_scroll(self, _controller, _dx, dy, scale=None):
         scale = scale or self.scale

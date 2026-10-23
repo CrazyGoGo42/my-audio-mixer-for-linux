@@ -74,8 +74,6 @@ except OSError:
 DEFAULT_SINK = next((c.sink for c in CHANNEL_LIST if c.key == "default"), "Default_Audio")
 VIRTUAL_SINKS = {c.sink for c in CHANNEL_LIST}
 OWN = own_nodes(CHANNEL_LIST)
-# Choices offered by the popup — every channel except the catch-all.
-CHANNELS = [(c.sink, c.label) for c in CHANNEL_LIST if c.key != "default"]
 
 # Apps asked about this session (avoid repeat dialogs within one login).
 asked_this_session = set()
@@ -155,12 +153,24 @@ def ensure_display():
                 break
 
 
+def popup_rows():
+    """The popup's choices, read fresh: a channel renamed in the window shows
+    up under its new name without restarting the daemon."""
+    try:
+        channels = load_channels()
+    except OSError:
+        channels = CHANNEL_LIST
+    rows = []
+    for c in channels:
+        if c.key != "default":
+            rows += [c.sink, c.label]
+    default = next((c.label for c in channels if c.key == "default"), "Default")
+    return rows + [apps.IGNORE, f"Leave on {default} (stop asking)"]
+
+
 def ask_channel(display):
     ensure_display()
-    rows = []
-    for sink, label in CHANNELS:
-        rows += [sink, label]
-    rows += [apps.IGNORE, "Leave on Default (stop asking)"]
+    rows = popup_rows()
     try:
         r = subprocess.run(
             ["zenity", "--list", "--title", f"Route: {display}",
