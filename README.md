@@ -1,159 +1,29 @@
 # Audio Mixer for Linux
 
-A lightweight VoiceMeeter-style mixer for Linux. Split your audio into separate
-channels — Desktop (the catch-all, games included), Discord, Music and Browser —
-each with its own volume and numpad hotkeys, all processed through EasyEffects.
-A fifth, **All Audio**, carries every channel mixed together for recording or
-streaming.
+**A VoiceMeeter-style mixer for Linux.** Give Discord, music, your browser and
+everything else their own volume slider, effects and hotkeys — and keep them
+apart.
 
 [![PipeWire](https://img.shields.io/badge/PipeWire-required-blue)](https://pipewire.org/)
-[![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%2B-orange)](https://ubuntu.com/)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04%2B-orange)](https://ubuntu.com/)
 [![GNOME](https://img.shields.io/badge/GNOME-required-green)](https://www.gnome.org/)
 
 ![The mixer window](docs/images/mixer-window.png)
 
-## The mixer window
+## What you get
 
-**Audio Mixer** in your app launcher (it also starts at login — keep it on a
-second screen, like VoiceMeeter):
-
-- **A strip per channel** plus your **Mic**, the **EasyEffects** output and
-  **All Audio**: volume slider, live level meter, mute.
-- **FX** per channel (through EasyEffects, or dry), **Bass / Treble**, and
-  **A1–A4** buttons for where a dry channel plays; the EasyEffects strip has its
-  own A1–A4.
-- **Outputs** bar: pick which device A1–A4 are ("Default output" follows your
-  headset when you plug it in). The **Mic** title picks your microphone.
-- **Playing now**: every app making sound, its level, and a button per channel —
-  click one to move the app there for good. New apps are marked **NEW** (while
-  the window is open, it asks here instead of popping up a dialog).
-- Hotkeys and the window stay in sync both ways. **Right-click** any mute
-  button, fader or A1–A4 button to see or change its hotkey (press the new
-  combination; Esc cancels).
-- Make the window narrow and it folds into a compact view for a corner:
-
-<img src="docs/images/mixer-window-compact.png" alt="Compact view" width="280">
-
-## The Problem
-
-On Windows, VoiceMeeter lets you split audio into virtual cables and control
-each independently. Linux gives you one volume slider for everything.
-
-## The Solution
-
-One **virtual sink** (PipeWire loopback device) per channel. Apps are
-routed to the right sink **declaratively** — pipewire-pulse places each stream
-on its channel the moment it's created. There's no daemon chasing streams after
-the fact, so:
-
-- A player you **stop and restart always comes back on its own channel.**
-- Nothing ever lands on the raw hardware output at full volume. Unrecognised
-  apps go to the **Desktop** channel instead.
-
-| Channel | What goes here                             | Mute          | Vol Down    | Vol Up      |
-| ------- | ------------------------------------------ | ------------- | ----------- | ----------- |
-| Desktop | Games, wine/proton, everything else        | `Ctrl+Num1`   | `Ctrl+Num4` | `Ctrl+Num7` |
-| Discord | Discord voice/audio                        | `Ctrl+Num2`   | `Ctrl+Num5` | `Ctrl+Num8` |
-| Music   | YouTube Music, Spotify, Plexamp            | `Ctrl+Num3`   | `Ctrl+Num6` | `Ctrl+Num9` |
-| Browser | Chrome, Firefox, Brave, etc.               | `Ctrl+NumDel` | `Ctrl+Num+` | `Ctrl+Num-` |
-
-Each keypress shows a minimal OSD overlay on your primary monitor that follows
-your GNOME light/dark theme.
-
-These are the defaults. Every strip — Mic, the four channels, EasyEffects and
-All Audio — can have mute / volume-down / volume-up hotkeys, and the channels and
-EasyEffects can have one per output (A1–A4). Set them by right-clicking in the
-mixer window, or:
-
-```bash
-audio-mixer hotkeys list                       # every action and its keys
-audio-mixer hotkeys set mic:mute "<Ctrl><Alt>m"
-audio-mixer hotkeys clear mic:mute
-```
-
-They're kept in `~/.config/audio-mixer/hotkeys.json` (backed up daily). Changing
-the mic's level never unmutes it, and a muted mic stays muted across reboots.
-
-### All Audio (the all-in-one channel)
-
-**All Audio** shows up in apps as an *input*, like a microphone. Pick it in
-OBS, a screen recorder or a voice app and it gets every channel mixed together,
-exactly at the levels and mutes you've set — the channels themselves stay
-separate. It's taken before EasyEffects (so your speaker EQ isn't baked into a
-stream) and doesn't include your mic. Don't use it as your Discord mic: it
-contains the Discord channel, so people would hear themselves.
-
-### Effects, outputs and your mic
-
-Like VoiceMeeter's strips and A1/A2 buttons — in the mixer window, or from a
-terminal with `audio-mixer` (both use the same settings):
-
-- **FX per channel** — on: the channel goes through your EasyEffects preset;
-  off: it plays dry. All on by default, which sounds exactly like before.
-- **EasyEffects is a strip of its own** with its own volume (pavucontrol:
-  "EasyEffects") and outputs. FX-on channels play wherever it plays.
-- **Outputs A1–A4** — each slot is a device you pick, or "default output"
-  (follows your headset when you plug it in). FX-off channels choose their own.
-- **Bass / Treble per channel**, ±12 dB, independent of FX.
-- **Mic** — EasyEffects listens to the "Mixer Mic", which only ever gets a
-  real microphone (your USB headset mic when it's plugged in, else the built-in
-  one), and apps' default mic is EasyEffects' processed output. Your speakers
-  can't end up in your mic.
-
-```bash
-audio-mixer status                 # what goes where
-audio-mixer devices                # outputs and mics you can pick
-audio-mixer fx browser off         # Browser plays dry
-audio-mixer slot A2 alsa_output.usb-…   # A2 = the headset
-audio-mixer out browser A2 on      # Browser also plays on A2
-audio-mixer out fx A2 on           # EasyEffects strip also plays on A2
-audio-mixer eq music bass 6        # +6 dB bass on Music
-audio-mixer mic auto               # or a device name from `devices`
-```
-
-Settings live in `~/.config/audio-mixer/mixer.json` (backed up daily).
-
-## How routing works
-
-```
-routes.json  ──(audio-routes-apply)──►  pipewire-pulse rules  ──►  every app born on the right sink
-```
-
-- **Known apps** (browsers, Discord, Spotify, YouTube Music, …) are matched by
-  name and pinned to their channel — see `~/.config/audio-mixer/routes.json`.
-- **Unknown apps** start on **Desktop**. A small popup
-  asks which channel they should use; your answer is saved and applied from then
-  on. No re-asking, and **no notifications.**
-
-To route apps by hand at any time:
-
-```bash
-audio-route-apps        # move everything currently playing onto its channel now
-audio-routes-apply      # recompile rules after editing routes.json
-pavucontrol             # GUI: drag a stream to any sink in the Playback tab
-```
-
-## Works with EasyEffects
-
-Every channel feeds EasyEffects, which then drives your hardware:
-
-```
-App → Channel sink (volume) → easyeffects_sink → EasyEffects → Speakers/Headset
-```
-
-EasyEffects is a Flatpak that starts after PipeWire, so the background daemon
-keeps the channel→EasyEffects links wired (and re-wires them if EasyEffects
-restarts). Your EasyEffects presets and settings are left untouched.
-
-## Requirements
-
-- **Ubuntu 22.04+** (or any distro with PipeWire + WirePlumber)
-- **GNOME on X11** for the keybindings and OSD (sinks/routing work anywhere)
-- **Python 3 + GTK3** (pre-installed on Ubuntu)
-- A **numpad**
-
-The installer pulls in anything missing (`zenity`, `pavucontrol`, `xrandr`,
-`rsync`, and EasyEffects from Flathub).
+- **Four separate channels** — Desktop (games and everything else), Discord,
+  Music and Browser — each with its own volume, mute, Bass and Treble.
+- **Your mic on its own strip**, through EasyEffects if you like.
+- **Apps land on the right channel by themselves.** New ones go to Desktop and
+  you pick their channel once, in the window.
+- **Outputs A1–A4**: send any channel to your speakers, headset, HDMI… or
+  through EasyEffects.
+- **All Audio**: every channel mixed together, as an input for OBS or a
+  recorder.
+- **Hotkeys for everything** — right-click any button or fader to set one.
+- **Survives reboots and reinstalls**: levels, mutes and settings come back,
+  and a daily backup goes to your Nextcloud folder.
 
 ## Install
 
@@ -163,29 +33,127 @@ cd my-audio-mixer-for-linux
 ./install.sh
 ```
 
-The installer sets up EasyEffects if it's missing, creates the channel sinks,
-compiles the routing rules, registers the background services (via systemd user
-units), sets up the keybindings, and takes a first backup. It's safe to rerun.
+That's it. The installer adds whatever is missing (EasyEffects included), sets
+everything up and can safely be run again. You'll find **Audio Mixer** in your
+app launcher; it also starts at login.
+
+**You need:** Ubuntu 24.04 or newer (or another distro with PipeWire, GNOME and
+libadwaita 1.5+), GNOME on X11 for the hotkeys, and a numpad for the default
+hotkeys.
+
+## The mixer window
+
+Each strip has a volume fader with a live level meter, a mute button and the
+level in %. From left to right:
+
+| Strip           | What it's for                                                                 |
+| --------------- | ----------------------------------------------------------------------------- |
+| **Mic**         | Your microphone. Click its name to pick a different mic.                      |
+| **Channels**    | **FX** on = through EasyEffects, off = plays dry on its own **A1–A4** outputs. |
+| **EasyEffects** | Everything with FX on, after your EasyEffects preset, and where it plays.     |
+| **All Audio**   | All channels mixed — pick it as an input in OBS (it doesn't include your mic). |
+
+- **Bass and Treble knobs** (±12 dB): drag up or down to turn them,
+  double-click to set them back to 0. Click one first and the mouse wheel or
+  arrow keys turn it too.
+- **Outputs** (top row): choose which device A1–A4 are. "Default output"
+  follows your headset when you plug it in.
+- **Playing now** (bottom): every app making sound. Click a channel to move the
+  app there — for good. New apps are marked **NEW**.
+
+### It fits any size
+
+Make the window smaller and everything shrinks with it, step by step — no
+scroll bars. Make it narrow (or short) and it turns into a compact mixer for a
+corner of your screen:
+
+<img src="docs/images/mixer-window-compact.png" alt="The compact view" width="300">
+
+### The menu
+
+<img src="docs/images/mixer-menu.png" alt="The menu" width="220" align="right">
+
+The **☰** button at the top:
+
+- **Theme**: follow the system, light or dark.
+- **Open EasyEffects** — its own window, for presets and effects.
+- **Restart EasyEffects** if it acts up.
+- **Restart Audio Engine** — the fix when a channel goes silent. Sound
+  stops for a few seconds, then everything comes back with your levels.
+- **Quit** (Ctrl+Q).
+
+<br clear="right">
+
+## Hotkeys
+
+**Right-click** any mute button, fader or A1–A4 button in the window, click
+**Change** and press the keys you want (Esc cancels). Every strip can have mute,
+volume down and volume up keys; channels and EasyEffects can also have one per
+output. A small overlay shows each change on screen.
+
+The defaults:
+
+| Channel | What goes here                      | Mute          | Volume down | Volume up   |
+| ------- | ----------------------------------- | ------------- | ----------- | ----------- |
+| Desktop | Games, wine/proton, everything else | `Ctrl+Num1`   | `Ctrl+Num4` | `Ctrl+Num7` |
+| Discord | Discord                             | `Ctrl+Num2`   | `Ctrl+Num5` | `Ctrl+Num8` |
+| Music   | YouTube Music, Spotify, Plexamp     | `Ctrl+Num3`   | `Ctrl+Num6` | `Ctrl+Num9` |
+| Browser | Chrome, Firefox, Brave, Zen…        | `Ctrl+NumDel` | `Ctrl+Num+` | `Ctrl+Num-` |
+
+A muted mic stays muted: changing its level doesn't unmute it, and it's still
+muted after a reboot.
 
 ## Backup & reinstalling Ubuntu
 
-Everything a fresh install would lose is backed up **daily** (and on every
-install) by `audio-mixer-backup`:
+Every day (and on every install) your channels, app routes, levels, hotkeys,
+window settings, EasyEffects presets and sound card profiles are backed up to
+`audio-mixer-backup/` in your **Nextcloud** folder (or `~/audio-mixer-backup`
+without Nextcloud).
 
-- your channels, learned app routes and channel volumes (`~/.config/audio-mixer`)
-- your EasyEffects settings and presets
-- each sound card's profile (e.g. the headset's "Analog Stereo Duplex" mic mode)
-
-The backup goes to `audio-mixer-backup/` inside your **Nextcloud** sync folder
-when there is one (so it survives the reinstall), otherwise `~/audio-mixer-backup`.
-`audio-mixer-backup --where` prints the folder; `audio-mixer-backup DIR` backs up
-to a folder of your choice and remembers it.
-
-After reinstalling Ubuntu:
+After a fresh Ubuntu install:
 
 1. Install the Nextcloud client and let it sync (or copy the backup folder back).
-2. `git clone` this repo and run `./install.sh` — it finds the backup and offers
-   to restore it. Or point it at one: `./install.sh --restore /path/to/backup`.
+2. Clone this repo and run `./install.sh` — it finds the backup and offers to
+   restore it. Or point it at one: `./install.sh --restore /path/to/backup`.
+
+## Troubleshooting
+
+<details>
+<summary><b>A channel is silent, or sound is missing after a reboot</b></summary>
+
+Use **☰ → Restart Audio Engine** (or `audio-mixer restart engine`). It restarts
+PipeWire safely and brings EasyEffects and your levels back. Don't restart
+WirePlumber on its own — on this PipeWire version that disconnects everything.
+</details>
+
+<details>
+<summary><b>An app went to the wrong channel</b></summary>
+
+Click the right channel next to it under **Playing now**. It's remembered from
+then on.
+</details>
+
+<details>
+<summary><b>No sound after plugging in a headset</b></summary>
+
+Give it a second — the outputs follow your default device. Check that the
+**Outputs** row shows the headset.
+</details>
+
+<details>
+<summary><b>All sound hardware is gone after a reboot</b></summary>
+
+If `pactl list cards short` is empty, the kernel booted without its sound
+drivers. Run `sudo apt install linux-modules-extra-$(uname -r)` and reboot.
+</details>
+
+<details>
+<summary><b>Check the background services</b></summary>
+
+```bash
+systemctl --user status audio-router-daemon audio-osd easyeffects-watchdog
+```
+</details>
 
 ## Uninstall
 
@@ -193,71 +161,81 @@ After reinstalling Ubuntu:
 ./uninstall.sh
 ```
 
-Removes the scripts, configs, services, and keybindings. EasyEffects settings
-and your backup folder are left alone.
+Removes the mixer, its services and hotkeys. Your EasyEffects settings and the
+backup folder are left alone.
 
-## How It Works
+---
 
-| Component               | What it does                                                              |
-| ----------------------- | ------------------------------------------------------------------------ |
-| `channels.conf`         | The channel list: sink names, labels, hotkeys. Everything reads it       |
-| `routes.json`           | Your app → channel map (editable; the popup also writes to it)           |
-| `audio-routes-apply`    | Builds the channel sinks + pipewire-pulse routing rules from the two above |
-| `audio-channel-control` | Adjusts per-channel volume/mute (the hotkeys call this)                  |
-| `audio-osd`             | Persistent GTK overlay showing the channel + volume on each keypress     |
-| `audio-mixer-window`    | The mixer window (GTK 4 + libadwaita)                                    |
-| `audio-mixer`           | FX, output slots, Bass/Treble and mic (writes `mixer.json`)              |
-| `audio-router-daemon`   | Prompts for unknown apps; the patchbay that links everything as `mixer.json` says; restores volumes at login. No notifs. |
-| `audio-route-apps`      | One-shot: move currently-playing apps onto their channel                 |
-| `easyeffects-watchdog`  | Restarts EasyEffects if it dies or hangs                                 |
-| `audio-mixer-backup`    | Daily backup / restore of your settings (see above)                      |
+<details>
+<summary><b>Command line</b></summary>
 
-### Architecture
+Everything the window does also works from a terminal:
+
+```bash
+audio-mixer status                     # what goes where
+audio-mixer devices                    # outputs and mics you can pick
+audio-mixer fx browser off             # Browser plays dry
+audio-mixer slot A2 alsa_output.usb-…  # A2 = the headset
+audio-mixer out browser A2 on          # Browser also plays on A2
+audio-mixer out fx A2 on               # the EasyEffects strip also plays on A2
+audio-mixer eq music bass 6            # +6 dB bass on Music
+audio-mixer mic auto                   # or a device name from `devices`
+audio-mixer hotkeys list               # every action and its keys
+audio-mixer hotkeys set mic:mute "<Ctrl><Alt>m"
+audio-mixer restart easyeffects        # or: restart engine
+```
+
+Your settings live in `~/.config/audio-mixer/`: `mixer.json` (FX, outputs,
+Bass/Treble, mic), `hotkeys.json`, `routes.json` (which app goes where) and
+`window.json` (window size and theme).
+</details>
+
+<details>
+<summary><b>Customizing</b></summary>
+
+- **Channels** — add, remove or rename them in
+  `~/.config/audio-mixer/channels.conf`, then run `audio-routes-apply`.
+- **Volume step per keypress** — `STEP` in `~/.local/bin/audio-channel-control`
+  (default 1%).
+- **Overlay position** — `TOP_MARGIN` in `~/.local/bin/audio-osd`.
+- **App routing by hand** — edit `~/.config/audio-mixer/routes.json` (match by
+  `binary` or `app` name) and run `audio-routes-apply`. Find an app's names with
+  `pactl list sink-inputs | grep -E 'application.(name|process.binary)'`.
+</details>
+
+<details>
+<summary><b>How it works</b></summary>
+
+Each channel is a virtual PipeWire sink with its own volume and Bass/Treble
+filters. Apps are placed on their channel **the moment they start** — PipeWire
+is told where each app belongs before its stream exists — so nothing ever
+blasts at full volume on the wrong output, and a restarted player comes back
+on its own channel.
 
 ```
-  Discord        Spotify        Chrome      games, (new app?)
+  Discord        Spotify        Chrome      games, new apps
      │              │              │                │
      ▼              ▼              ▼                ▼
  Discord_Audio  Music_Audio   Browser_Audio    Default_Audio   ← volume + Bass/Treble
      │              │              │                │            (Desktop)
-     ├── FX on ──► easyeffects_sink → EasyEffects → EE_Return ──► its A1–A4
+     ├── FX on ──► EasyEffects ──► its A1–A4
      ├── FX off ─► the channel's own A1–A4 (speakers, headset, HDMI…)
      └── always ─► All Audio (input for OBS / recorders)
 
   real mic ──► Mixer Mic ──► EasyEffects (input effects) ──► apps' default mic
 ```
 
-## Customization
-
-- **Channels** — add, remove or rename channels in
-  `~/.config/audio-mixer/channels.conf`, then run `audio-routes-apply` (restarts
-  PipeWire). Its numpad columns only seed the hotkeys on a first install; after
-  that, hotkeys live in `hotkeys.json` (see above).
-- **Volume step** — edit `STEP` in `~/.local/bin/audio-channel-control` (default `1`).
-- **OSD position** — edit `TOP_MARGIN` in `~/.local/bin/audio-osd`.
-- **Routing** — edit `~/.config/audio-mixer/routes.json`, then run `audio-routes-apply`.
-
-## Troubleshooting
-
-**An app went to the wrong channel:** edit `~/.config/audio-mixer/routes.json`
-(match by `application.process.binary` or `application.name`) and run
-`audio-routes-apply`. Find an app's identifiers with
-`pactl list sink-inputs | grep -E 'application.(name|process.binary)'`.
-
-**No sound after plugging in a headset:** the chain follows your default output
-via EasyEffects; give it a second, or check `pavucontrol` → Output Devices.
-
-**Sinks missing after reboot, or a channel is silent:** run
-`audio-routes-apply --restart-pipewire`. It restarts PipeWire safely (EasyEffects
-quit and relaunched, volumes restored before anything plays) and tells you if
-something still isn't wired. Avoid restarting WirePlumber on its own — on this
-PipeWire version that disconnects everything.
-
-**All sound hardware gone after a reboot** (`pactl list cards short` is empty,
-only the virtual channels remain): the kernel booted without its sound drivers.
-Run `sudo apt install linux-modules-extra-$(uname -r)` and reboot.
-
-**Check the services:** `systemctl --user status audio-router-daemon audio-osd easyeffects-watchdog`.
+| Part                    | What it does                                                         |
+| ----------------------- | -------------------------------------------------------------------- |
+| `audio-mixer-window`    | The window (GTK 4 + libadwaita)                                      |
+| `audio-mixer`           | Command line for FX, outputs, Bass/Treble, mic, hotkeys, restarts    |
+| `audio-routes-apply`    | Builds the channel sinks and app routing rules                       |
+| `audio-router-daemon`   | Keeps everything wired, restores levels at login, asks about new apps |
+| `audio-channel-control` | What the hotkeys run                                                  |
+| `audio-osd`             | The on-screen overlay for hotkeys                                    |
+| `easyeffects-watchdog`  | Restarts EasyEffects if it dies or hangs                             |
+| `audio-mixer-backup`    | The daily backup / restore                                           |
+</details>
 
 ## License
 
