@@ -23,8 +23,6 @@ HOTKEYS_FILE = os.path.join(MIXER_DIR, "hotkeys.json")
 SLOTS = ("A1", "A2", "A3", "A4")
 WHAT = {"mute": "Mute", "down": "Vol Down", "up": "Vol Up"}
 
-GNOME_KEYS = "org.gnome.settings-daemon.plugins.media-keys"
-GNOME_SCHEMA = GNOME_KEYS + ".custom-keybinding"
 GNOME_PATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings"
 OUR_COMMANDS = ("audio-channel-control", "audio-mixer out")
 
@@ -132,9 +130,15 @@ def bindings(keys, bin_dir, channels):
 
 
 # ------------------------------------------------------------------ GNOME
+# One `dconf dump` + one `dconf load` (plus a reset per leftover) instead of
+# ~130 gsettings calls: applying takes milliseconds, so the window can suspend
+# our shortcuts while you press a new combination.
 
-def _gsettings(*args):
-    return subprocess.run(["gsettings", *args], capture_output=True, text=True).stdout.strip()
+DCONF_DIR = "/org/gnome/settings-daemon/plugins/media-keys/"
+
+
+def _dconf(args, stdin=None):
+    return subprocess.run(["dconf", *args], input=stdin, capture_output=True, text=True).stdout
 
 
 def _gv(s):
@@ -142,46 +146,62 @@ def _gv(s):
     return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def _foreign_paths(gs):
-    """The user's own custom shortcuts; ours (recognised by command) are reset."""
-    kept = []
-    for path in re.findall(r"'([^']*)'", gs("get", GNOME_KEYS, "custom-keybindings")):
-        if any(c in gs("get", f"{GNOME_SCHEMA}:{path}", "command") for c in OUR_COMMANDS):
-            for k in ("name", "command", "binding"):
-                gs("reset", f"{GNOME_SCHEMA}:{path}", k)
-        else:
-            kept.append(path)
-    return kept
+def _ungv(value):
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        value = value[1:-1]
+    return re.sub(r"\\(.)", r"\1", value)
 
 
-def _set_list(gs, paths):
-    gs("set", GNOME_KEYS, "custom-keybindings",
-       "[" + ", ".join(_gv(p) for p in paths) + "]" if paths else "@as []")
+def _read(dconf):
+    """(listed paths, {path: {key: value}}) of the custom keybindings."""
+    listed, entries, section = [], {}, None
+    for line in dconf(["dump", DCONF_DIR]).splitlines():
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif "=" in line and section:
+            key, _, value = line.partition("=")
+            if section == "/" and key == "custom-keybindings":
+                listed = [_ungv(v) for v in re.findall(r"'(?:[^'\\]|\\.)*'", value)]
+            elif section != "/":
+                entries.setdefault(DCONF_DIR + section + "/", {})[key] = _ungv(value)
+    return listed, entries
 
 
-def apply_to_gnome(binding_list, gs=_gsettings):
+def _ours(entry):
+    return any(c in entry.get("command", "") for c in OUR_COMMANDS)
+
+
+def apply_to_gnome(binding_list, dconf=_dconf):
     """Replace our GNOME shortcuts with binding_list; leave everyone else's."""
-    kept = _foreign_paths(gs)
-    ours, n = [], 100
+    listed, entries = _read(dconf)
+    kept = [p for p in listed if not _ours(entries.get(p, {}))]
+    old_ours = [p for p, e in entries.items() if _ours(e)]
+    lines, ours, n = [], [], 100
     for name, command, accel in binding_list:
         while f"{GNOME_PATH}/custom{n}/" in kept:
             n += 1
         path = f"{GNOME_PATH}/custom{n}/"
         n += 1
-        for key, value in (("name", name), ("command", command), ("binding", accel)):
-            gs("set", f"{GNOME_SCHEMA}:{path}", key, _gv(value))
         ours.append(path)
-    _set_list(gs, kept + ours)
+        lines += [f"[{path[len(DCONF_DIR):].rstrip('/')}]", f"binding={_gv(accel)}",
+                  f"command={_gv(command)}", f"name={_gv(name)}", ""]
+    paths = kept + ours
+    head = ["[/]", "custom-keybindings=" + ("[" + ", ".join(_gv(p) for p in paths) + "]" if paths else "@as []"), ""]
+    dconf(["load", DCONF_DIR], "\n".join(head + lines) + "\n")
+    for path in old_ours:
+        if path not in ours:
+            dconf(["reset", "-f", path])
     return len(ours)
 
 
-def remove_from_gnome(gs=_gsettings):
-    _set_list(gs, _foreign_paths(gs))
+def remove_from_gnome(dconf=_dconf):
+    apply_to_gnome([], dconf)
 
 
 # -------------------------------------------------------------------- CLI
 
-def cli(args, channels, bin_dir, path=None, gs=_gsettings):
+def cli(args, channels, bin_dir, path=None, gs=_dconf):
     """`audio-mixer hotkeys list | apply | set <action> <accel> | clear <action>`.
     Returns (exit code, text to print)."""
     keys = load(channels, path)

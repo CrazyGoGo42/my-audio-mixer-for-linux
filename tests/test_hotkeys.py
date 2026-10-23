@@ -20,39 +20,49 @@ SCHEMA = KEYS + ".custom-keybinding"
 GPATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings"
 
 
-class FakeGsettings:
-    """Just enough of gsettings get/set/reset for custom keybindings."""
+class FakeDconf:
+    """Just enough of `dconf dump/load/reset -f` for custom keybindings; also
+    counts calls (applying must stay a couple of process runs, not ~130)."""
+
+    BASE = "/org/gnome/settings-daemon/plugins/media-keys/"
 
     def __init__(self, paths=()):
-        self.values = {}
         self.list = [p for p, _ in paths]
-        for path, (name, command, binding) in paths:
-            self.values[(path, "name")] = f"'{name}'"
-            self.values[(path, "command")] = f"'{command}'"
-            self.values[(path, "binding")] = f"'{binding}'"
+        self.entries = {p: dict(zip(("name", "command", "binding"), v)) for p, v in paths}
+        self.calls = 0
 
-    def __call__(self, *args):
-        op, schema, key = args[0], args[1], args[2]
-        if schema == KEYS:
-            if op == "get":
-                return "[" + ", ".join(f"'{p}'" for p in self.list) + "]" if self.list else "@as []"
-            self.list = re.findall(r"'([^']*)'", args[3])
+    @staticmethod
+    def _q(s):
+        return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+    def __call__(self, args, stdin=None):
+        self.calls += 1
+        if args[0] == "dump":
+            out = ["[/]", "custom-keybindings=[" + ", ".join(self._q(p) for p in self.list) + "]", ""]
+            for p, e in self.entries.items():
+                rel = p[len(self.BASE):].rstrip("/")
+                out += [f"[{rel}]"] + [f"{k}={self._q(v)}" for k, v in sorted(e.items())] + [""]
+            return "\n".join(out)
+        if args[0] == "reset":
+            self.entries.pop(args[-1], None)
             return ""
-        path = schema.split(":", 1)[1]
-        if op == "get":
-            return self.values.get((path, key), "''")
-        if op == "reset":
-            self.values.pop((path, key), None)
-        else:
-            self.values[(path, key)] = args[3]
+        section = None
+        for line in stdin.splitlines():
+            if line.startswith("["):
+                section = line[1:-1]
+            elif "=" in line:
+                key, _, value = line.partition("=")
+                if section == "/" and key == "custom-keybindings":
+                    self.list = re.findall(r"'([^']*)'", value)
+                else:
+                    path = self.BASE + section + "/"
+                    v = value[1:-1].replace("\\'", "'").replace("\\\\", "\\")
+                    self.entries.setdefault(path, {})[key] = v
         return ""
 
     def bound(self):
-        """[(name, command, binding)] of the listed paths, unquoted."""
-        out = []
-        for p in self.list:
-            out.append(tuple(self.values.get((p, k), "''")[1:-1] for k in ("name", "command", "binding")))
-        return out
+        return [tuple(self.entries.get(p, {}).get(k, "") for k in ("name", "command", "binding"))
+                for p in self.list]
 
 
 class HotkeysTest(unittest.TestCase):
@@ -111,7 +121,7 @@ class HotkeysTest(unittest.TestCase):
             self.assertFalse(acceptable(accel), accel)
 
     def test_apply_keeps_foreign_shortcuts(self):
-        gs = FakeGsettings([
+        gs = FakeDconf([
             (f"{GPATH}/custom0/", ("Terminal", "gnome-terminal", "<Super>t")),
             (f"{GPATH}/custom100/", ("CH1 Mute (Games)", "/old/audio-channel-control games mute", "<Ctrl>KP_1")),
         ])
@@ -120,12 +130,18 @@ class HotkeysTest(unittest.TestCase):
                                       ("Mic Mute", "/bin/audio-channel-control mic mute", "<Ctrl><Alt>m")])
 
     def test_remove_from_gnome_leaves_only_foreign(self):
-        gs = FakeGsettings([
+        gs = FakeDconf([
             (f"{GPATH}/custom0/", ("Terminal", "gnome-terminal", "<Super>t")),
             (f"{GPATH}/custom101/", ("Music A2", "/bin/audio-mixer out music A2 toggle", "<Super>F2")),
         ])
         remove_from_gnome(gs)
         self.assertEqual(gs.bound(), [("Terminal", "gnome-terminal", "<Super>t")])
+
+    def test_applying_is_a_handful_of_process_runs(self):
+        gs = FakeDconf([(f"{GPATH}/custom100/", ("Old", "/b/audio-channel-control music up", "<Ctrl>KP_9"))])
+        apply_to_gnome(bindings(load(self.chs, self.file), "/bin", self.chs), gs)
+        self.assertEqual(len(gs.bound()), 21)
+        self.assertLessEqual(gs.calls, 3)
 
 
 if __name__ == "__main__":
@@ -141,7 +157,7 @@ class HotkeysCliTest(unittest.TestCase):
             f.write(CHANNELS_CONF)
         self.chs = load_channels(path)
         self.file = os.path.join(self.dir.name, "hotkeys.json")
-        self.gs = FakeGsettings()
+        self.gs = FakeDconf()
 
     def run_cli(self, *args):
         from audiomixer.hotkeys import cli
