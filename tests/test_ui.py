@@ -290,7 +290,7 @@ class MeterLifecycleTest(UiTestBase):
         self.assertEqual(self.running(), sorted([
             "--device=Mic_In", "--device=Default_Audio.monitor", "--device=Discord_Audio.monitor",
             "--device=Music_Audio.monitor", "--device=Browser_Audio.monitor", "--device=EE_Return.monitor",
-            "--device=All_Audio", "--monitor-stream=119", "--monitor-stream=200"]))
+            "--device=All_Audio", "--monitor-stream=119", "--monitor-stream=141", "--monitor-stream=200"]))
 
     def test_meters_stop_when_hidden(self):
         self.meters.start()
@@ -303,6 +303,26 @@ class MeterLifecycleTest(UiTestBase):
         self.controller.refresh()
         self.assertNotIn("--monitor-stream=200", self.running())
         self.assertIn("--monitor-stream=119", self.running())
+
+    def test_app_row_shows_its_loudest_stream(self):
+        # Zen has several streams and only one may be playing (seen live: the
+        # row metered an idle stream and stayed empty).
+        self.meters.start()
+        by_args = {r.args[0]: r for r in self.readers}
+        by_args["--monitor-stream=119"].on_level(0.0)
+        by_args["--monitor-stream=141"].on_level(0.5)
+        self.meters._frame()
+        zen = next(r for r in self.win.apps.rows if r.app.name == "Zen")
+        self.assertGreater(zen.meter.get_value(), 0.8)
+
+    def test_meters_use_a_decibel_scale(self):
+        from audiomixer.ui.levels import meter_fraction
+        self.assertEqual(meter_fraction(1.0), 1.0)
+        self.assertEqual(meter_fraction(0.0), 0.0)
+        self.assertEqual(meter_fraction(0.0005), 0.0)               # below -60 dB
+        self.assertAlmostEqual(meter_fraction(10 ** (-30 / 20)), 0.5)  # -30 dB = half
+        # Seen live: -51 dBFS through a 27% channel must still show something.
+        self.assertGreater(meter_fraction(93 / 32768), 0.1)
 
     def test_meter_level_is_post_fader_and_zero_when_muted(self):
         from audiomixer.ui.levels import strip_level
