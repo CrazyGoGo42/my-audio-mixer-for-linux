@@ -6,7 +6,8 @@ import unittest
 
 from audiomixer.config import load_channels
 from audiomixer.hotkeys import (
-    acceptable, actions, apply_to_gnome, assign, bindings, load, remove_from_gnome, save,
+    acceptable, actions, apply_to_gnome, assign, bindings, heal, load, remove_from_gnome, save,
+    suspend, suspended, _dconf,
 )
 
 CHANNELS_CONF = """\
@@ -105,9 +106,9 @@ class HotkeysTest(unittest.TestCase):
 
     def test_slot_and_strip_commands(self):
         b = bindings({"music:A2": "<Super>F2", "mic:mute": "<Ctrl><Alt>m", "fx:A1": "<Ctrl>F1"}, "/bin", self.chs)
-        self.assertIn(("Music A2", "/bin/audio-mixer out music A2 toggle", "<Super>F2"), b)
+        self.assertIn(("Music A2", "/bin/audio-channel-control music A2", "<Super>F2"), b)
         self.assertIn(("Mic Mute", "/bin/audio-channel-control mic mute", "<Ctrl><Alt>m"), b)
-        self.assertIn(("EasyEffects A1", "/bin/audio-mixer out fx A1 toggle", "<Ctrl>F1"), b)
+        self.assertIn(("EasyEffects A1", "/bin/audio-channel-control fx A1", "<Ctrl>F1"), b)
 
     def test_setting_a_used_combination_moves_it(self):
         keys = assign({"default:mute": "<Ctrl>KP_1"}, "mic:mute", "<Control>KP_1")
@@ -115,10 +116,64 @@ class HotkeysTest(unittest.TestCase):
         self.assertEqual(assign(keys, "mic:mute", None), {})
 
     def test_acceptable_rejects_plain_letters(self):
-        for accel in ("<Ctrl>m", "<Alt>F4", "<Super>1", "F5", "KP_1", "<Ctrl>KP_1", "XF86AudioMute"):
+        for accel in ("<Ctrl>m", "<Alt>F4", "<Super>1", "F5", "<Ctrl>KP_1", "XF86AudioMute"):
             self.assertTrue(acceptable(accel), accel)
         for accel in ("a", "<Shift>a", "space", "", "<Shift>Return"):
             self.assertFalse(acceptable(accel), accel)
+
+    def test_keypad_keys_need_a_modifier(self):
+        # A bare keypad key bound globally would stop the numpad typing anywhere.
+        for accel in ("KP_1", "KP_Add", "KP_End", "KP_Enter", "<Shift>KP_2"):
+            self.assertFalse(acceptable(accel), accel)
+
+    def test_numlock_off_capture_is_stored_as_the_numpad_key(self):
+        # NumLock off, Ctrl+Num4 arrives as KP_Left: it's Desktop Vol Down's
+        # key (via its twin), so it must move here, not end up bound twice.
+        keys = assign({"default:down": "<Ctrl>KP_4"}, "music:up", "<Control>KP_Left")
+        self.assertEqual(keys, {"music:up": "<Control>KP_4"})
+        accels = sorted(a for _, _, a in bindings(keys, "/bin", self.chs))
+        self.assertEqual(accels, ["<Control>KP_4", "<Control>KP_Left"])
+
+    def test_a_failed_read_writes_nothing(self):
+        # A failed dump must never be taken for "no shortcuts" and delist yours.
+        runs = []
+
+        def broken(args, stdin=None):
+            runs.append(args[0])
+            if args[0] == "dump":
+                raise RuntimeError("dconf: cannot read")
+            return ""
+        with self.assertRaises(RuntimeError):
+            apply_to_gnome(bindings(load(self.chs, self.file), "/bin", self.chs), broken)
+        self.assertEqual(runs, ["dump"])
+
+    def test_dconf_failures_are_raised(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "dconf"), "w") as f:
+                f.write("#!/bin/sh\necho 'error: no session bus' >&2\nexit 1\n")
+            os.chmod(os.path.join(d, "dconf"), 0o755)
+            old = os.environ["PATH"]
+            os.environ["PATH"] = d + os.pathsep + old
+            try:
+                with self.assertRaisesRegex(RuntimeError, "no session bus"):
+                    _dconf(["dump", "/"])
+            finally:
+                os.environ["PATH"] = old
+
+    def test_suspend_marks_and_heal_puts_them_back(self):
+        # If the window dies mid-capture, the marker lets it (or the daemon)
+        # restore the shortcuts later instead of leaving you without hotkeys.
+        gs = FakeDconf()
+        apply_to_gnome(bindings(load(self.chs, self.file), "/bin", self.chs), gs)
+        suspend(gs, self.file)
+        self.assertEqual(gs.bound(), [])
+        self.assertTrue(suspended(self.file))
+        self.assertTrue(heal(self.chs, "/bin", self.file, gs))
+        self.assertEqual(len(gs.bound()), 21)
+        self.assertFalse(suspended(self.file))
+        runs = gs.calls
+        self.assertFalse(heal(self.chs, "/bin", self.file, gs))  # nothing pending: no dconf runs
+        self.assertEqual(gs.calls, runs)
 
     def test_apply_keeps_foreign_shortcuts(self):
         gs = FakeDconf([
@@ -143,9 +198,6 @@ class HotkeysTest(unittest.TestCase):
         self.assertEqual(len(gs.bound()), 21)
         self.assertLessEqual(gs.calls, 3)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class HotkeysCliTest(unittest.TestCase):
@@ -187,3 +239,15 @@ class HotkeysCliTest(unittest.TestCase):
         self.assertIn("music:mute", text)
         self.assertIn("<Ctrl>KP_3", text)
         self.assertIn("fx:A4", text)
+
+    def test_apply_reports_a_dconf_failure(self):
+        def broken(args, stdin=None):
+            raise RuntimeError("dconf: cannot read")
+        from audiomixer.hotkeys import cli
+        code, text = cli(["apply"], self.chs, "/bin", self.file, broken)
+        self.assertNotEqual(code, 0)
+        self.assertIn("cannot read", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

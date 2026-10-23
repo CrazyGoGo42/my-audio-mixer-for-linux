@@ -51,7 +51,7 @@ for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "li
 from audiomixer.config import (  # noqa: E402
     ALL_AUDIO, EE_RETURN, MIC_IN, STATE_FILE, load_channels, load_state,
 )
-from audiomixer import apps  # noqa: E402
+from audiomixer import apps, hotkeys  # noqa: E402
 from audiomixer.pwgraph import read_graph  # noqa: E402
 from audiomixer.reconcile import apply_eq, reconcile_once  # noqa: E402
 from audiomixer.routing import own_nodes  # noqa: E402
@@ -327,13 +327,15 @@ def restore_volumes(path=None, targets=None, names=None):
             vols = json.load(f)
     except Exception:
         return
+    # Mutes are put back, never taken off: nodes come up unmuted anyway, and a
+    # late second pass must not undo a mute you made in between.
     mutes = vols.get("_mute") if isinstance(vols.get("_mute"), dict) else {}  # older files have none
     for name, raw in vols.items():
         if name in kinds and (names is None or name in names):
             subprocess.run(["pactl", f"set-{kinds[name]}-volume", name, str(int(raw))],
                            capture_output=True, text=True)
-            if name in mutes:
-                subprocess.run(["pactl", f"set-{kinds[name]}-mute", name, "1" if mutes[name] else "0"],
+            if mutes.get(name) is True:
+                subprocess.run(["pactl", f"set-{kinds[name]}-mute", name, "1"],
                                capture_output=True, text=True)
 
 
@@ -386,11 +388,30 @@ def kill_previous():
 
 
 def cleanup(*_):
+    # Save the latest levels and mutes (the poll may be up to 10 s behind,
+    # e.g. a mic muted just before reboot) — unless a restore is still
+    # pending, when the nodes would still be at their fresh 100%.
+    if vol_ids_seen and not any(restores_left.values()):
+        try:
+            save_volumes()
+        except Exception:
+            pass
     try:
         os.unlink(PID_FILE)
     except OSError:
         pass
     sys.exit(0)
+
+
+BIN_DIR = os.path.expanduser("~/.local/bin")
+
+
+def heal_hotkeys():
+    """The window takes our GNOME shortcuts out while you press a new
+    combination; if it died before putting them back, put them back. Costs one
+    file check per pass otherwise."""
+    if hotkeys.suspended() and not window_running():
+        hotkeys.heal(CHANNEL_LIST, BIN_DIR)
 
 
 def consider(stream, routes):
@@ -440,6 +461,10 @@ def main():
             time.sleep(CHAIN_POLL_SECONDS)
             try:
                 tick()
+            except Exception:
+                pass
+            try:
+                heal_hotkeys()
             except Exception:
                 pass
     threading.Thread(target=chain_watch, daemon=True).start()

@@ -32,6 +32,7 @@ NUMLOCK_OFF = {
     "KP_4": "KP_Left", "KP_5": "KP_Begin", "KP_6": "KP_Right", "KP_7": "KP_Home",
     "KP_8": "KP_Up", "KP_9": "KP_Prior", "KP_Decimal": "KP_Delete",
 }
+NUMLOCK_ON = {off: on for on, off in NUMLOCK_OFF.items()}
 STRONG_MODS = {"ctrl", "control", "primary", "alt", "mod1", "super", "meta", "hyper", "mod4"}
 MOD_ALIASES = {"ctrl": "control", "primary": "control", "mod1": "alt", "mod4": "super"}
 
@@ -57,22 +58,31 @@ def _split(accel):
 
 
 def acceptable(accel):
-    """Safe to bind globally: has Ctrl/Alt/Super, or is an F-, keypad or media
-    key. A plain letter (even with Shift) would break typing everywhere."""
+    """Safe to bind globally: has Ctrl/Alt/Super, or is an F- or media key.
+    A plain letter (even with Shift) or a bare keypad key would break typing
+    everywhere."""
     mods, key = _split(accel)
     if not key:
         return False
     return bool(mods & {MOD_ALIASES.get(m, m) for m in STRONG_MODS}) or bool(
-        re.fullmatch(r"F\d{1,2}", key) or key.startswith(("KP_", "XF86")))
+        re.fullmatch(r"F\d{1,2}", key) or key.startswith("XF86"))
+
+
+def canonical(accel):
+    """The NumLock-on name for a keypad key pressed with NumLock off
+    (<Ctrl>KP_Left -> <Ctrl>KP_4): its twin is bound for it anyway."""
+    key = _split(accel)[1]
+    return accel[: len(accel) - len(key)] + NUMLOCK_ON[key] if key in NUMLOCK_ON else accel
 
 
 def _same(a, b):
-    return _split(a) == _split(b)
+    return _split(canonical(a)) == _split(canonical(b))
 
 
 def assign(keys, action, accel):
     """keys with `action` set to accel (None clears it); a combination already
     used by another action moves here — one key, one action."""
+    accel = canonical(accel) if accel else accel
     new = {a: k for a, k in keys.items() if a != action and not (accel and _same(k, accel))}
     if accel:
         new[action] = accel
@@ -107,10 +117,9 @@ def save(keys, path=None):
 
 
 def command_for(action, bin_dir):
+    """audio-channel-control does volume, mute and A1–A4 toggles, and shows the OSD."""
     target, what = action.split(":", 1)
-    if what in WHAT:
-        return f"{bin_dir}/audio-channel-control {target} {what}"
-    return f"{bin_dir}/audio-mixer out {target} {what} toggle"
+    return f"{bin_dir}/audio-channel-control {target} {what}"
 
 
 def bindings(keys, bin_dir, channels):
@@ -138,7 +147,10 @@ DCONF_DIR = "/org/gnome/settings-daemon/plugins/media-keys/"
 
 
 def _dconf(args, stdin=None):
-    return subprocess.run(["dconf", *args], input=stdin, capture_output=True, text=True).stdout
+    r = subprocess.run(["dconf", *args], input=stdin, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"dconf {args[0]}: {r.stderr.strip() or 'failed'}")
+    return r.stdout
 
 
 def _gv(s):
@@ -199,6 +211,43 @@ def remove_from_gnome(dconf=_dconf):
     apply_to_gnome([], dconf)
 
 
+# While the window waits for you to press a new combination our shortcuts are
+# out of GNOME (or GNOME would grab the keys first). A marker next to
+# hotkeys.json records that, so a window that dies mid-capture can't leave you
+# without hotkeys: the next window start, or the router daemon, puts them back.
+
+def _marker(path=None):
+    return os.path.join(os.path.dirname(path or HOTKEYS_FILE), ".hotkeys-suspended")
+
+
+def suspended(path=None):
+    return os.path.exists(_marker(path))
+
+
+def suspend(dconf=_dconf, path=None):
+    os.makedirs(os.path.dirname(_marker(path)), exist_ok=True)
+    open(_marker(path), "w").close()
+    remove_from_gnome(dconf)
+
+
+def resume(binding_list, dconf=_dconf, path=None):
+    """Bind binding_list and clear the suspended marker."""
+    n = apply_to_gnome(binding_list, dconf)
+    try:
+        os.unlink(_marker(path))
+    except FileNotFoundError:
+        pass
+    return n
+
+
+def heal(channels, bin_dir, path=None, dconf=_dconf):
+    """Put our shortcuts back if a capture never finished. False: nothing to do."""
+    if not suspended(path):
+        return False
+    resume(bindings(load(channels, path), bin_dir, channels), dconf, path)
+    return True
+
+
 # -------------------------------------------------------------------- CLI
 
 def cli(args, channels, bin_dir, path=None, gs=_dconf):
@@ -211,7 +260,10 @@ def cli(args, channels, bin_dir, path=None, gs=_dconf):
         return 0, "\n".join(f"{a:{width}}  {keys.get(a, '-'):24}  {label}" for a, label in known.items())
     if args[:1] == ["apply"]:
         save(keys, path)
-        n = apply_to_gnome(bindings(keys, bin_dir, channels), gs)
+        try:
+            n = resume(bindings(keys, bin_dir, channels), gs, path)
+        except RuntimeError as e:
+            return 1, f"could not update GNOME shortcuts ({e})"
         return 0, f"{n} keyboard shortcuts configured"
     if args[:1] in (["set"], ["clear"]) and len(args) == (3 if args[0] == "set" else 2):
         action = args[1]
@@ -219,9 +271,12 @@ def cli(args, channels, bin_dir, path=None, gs=_dconf):
             return 2, f"unknown action {action!r} (see `audio-mixer hotkeys list`)"
         accel = args[2] if args[0] == "set" else None
         if accel is not None and not acceptable(accel):
-            return 2, f"{accel!r} needs Ctrl, Alt or Super (or an F-, keypad or media key)"
+            return 2, f"{accel!r} needs Ctrl, Alt or Super (or an F- or media key)"
         keys = assign(keys, action, accel)
         save(keys, path)
-        apply_to_gnome(bindings(keys, bin_dir, channels), gs)
+        try:
+            resume(bindings(keys, bin_dir, channels), gs, path)
+        except RuntimeError as e:
+            return 1, f"saved, but could not update GNOME shortcuts ({e})"
         return 0, ""
     return 2, "usage: audio-mixer hotkeys list | apply | set <action> <accel> | clear <action>"

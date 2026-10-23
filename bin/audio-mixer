@@ -33,7 +33,7 @@ for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "li
         sys.path.insert(0, _lib)
         break
 from audiomixer import hotkeys  # noqa: E402
-from audiomixer.commands import devices_list, run, status_dict  # noqa: E402
+from audiomixer.commands import devices_list, out_message, run, status_dict  # noqa: E402
 from audiomixer.config import AUTO_MIC, DEFAULT_OUTPUT, SLOTS, load_channels, load_state  # noqa: E402
 from audiomixer.pwgraph import read_graph  # noqa: E402
 
@@ -79,7 +79,9 @@ def main(argv):
                 print(f"{d['kind']:7s} {d['name']}  ({d['description']})")
         return 0
     try:
-        run(argv)
+        state = run(argv)
+        if argv[0] == "out":
+            print(out_message(argv, channels, state))
     except ValueError as e:
         print(f"audio-mixer: {e}", file=sys.stderr)
         return 2

@@ -41,6 +41,16 @@ def _set_slot(slots, slot, on):
     return [s for s in SLOTS if s in chosen]
 
 
+def out_message(argv, channels, state):
+    """What an `out <channel|fx> <slot> ...` command left behind, for the OSD:
+    "Music A2 on"."""
+    target, slot = argv[1], _slot(argv[2])
+    if target.lower() == "fx":
+        return f"EasyEffects {slot} {'on' if slot in state.fx_outputs else 'off'}"
+    ch = _channel(channels, target)
+    return f"{ch.label} {slot} {'on' if slot in state.channels[ch.key].outputs else 'off'}"
+
+
 def apply_command(argv, channels, state):
     """The new MixerState after one command (the given state is not changed)."""
     s = copy.deepcopy(state)

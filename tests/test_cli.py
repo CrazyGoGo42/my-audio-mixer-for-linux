@@ -44,6 +44,13 @@ class ApplyCommandTest(unittest.TestCase):
         s = run("out", "fx", "A2", "on")
         self.assertEqual(s.fx_outputs, ["A1", "A2"])
 
+    def test_out_says_what_it_did(self):
+        # The A1–A4 hotkeys show this on the OSD.
+        s = run("out", "music", "A2", "toggle")
+        self.assertEqual(CLI.out_message(["out", "music", "A2", "toggle"], CHS, s), "Music A2 on")
+        s = run("out", "fx", "A1", "toggle")
+        self.assertEqual(CLI.out_message(["out", "fx", "a1", "toggle"], CHS, s), "EasyEffects A1 off")
+
     def test_outputs_stay_in_slot_order(self):
         s = run("out", "music", "A3", "on", state=run("out", "music", "A1", "off"))
         s = run("out", "music", "A1", "on", state=s)

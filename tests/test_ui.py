@@ -67,14 +67,23 @@ class UiTestBase(unittest.TestCase):
         self.moves = []
         self.keys = {"music:mute": "<Ctrl>KP_3", "music:down": "<Ctrl>KP_6", "music:up": "<Ctrl>KP_9"}
         self.hk_log = []
+        self.hk_suspended = False
+
+        def suspend_keys():
+            self.hk_log.append(("suspend",))
+            self.hk_suspended = True
+
+        def apply_keys(keys):
+            self.hk_log.append(("apply", dict(keys)))
+            self.hk_suspended = False
 
         def save_keys(keys):
             self.hk_log.append(("save", dict(keys)))
             self.keys = dict(keys)
         self.controller = Controller(CHS, read_snapshot=lambda ch: self.snap,
                                      load_hotkeys=lambda: dict(self.keys), save_hotkeys=save_keys,
-                                     apply_hotkeys=lambda keys: self.hk_log.append(("apply", dict(keys))),
-                                     remove_hotkeys=lambda: self.hk_log.append(("suspend",)),
+                                     apply_hotkeys=apply_keys, remove_hotkeys=suspend_keys,
+                                     hotkeys_suspended=lambda: self.hk_suspended,
                                      read_status=lambda ch: self.status,
                                      run=self.calls.append, run_command=self.commands.append,
                                      remember=lambda props, sink: self.moves.append(("remember", props["application.process.binary"], sink)),
@@ -559,3 +568,21 @@ class HotkeyEditorTest(UiTestBase):
         pop.emit("closed")
         self.assertIsNone(pop.capturing)
         self.assertEqual(self.hk_log[-1][0], "apply")
+
+
+class HotkeyHealTest(UiTestBase):
+    def test_stopping_mid_capture_puts_shortcuts_back(self):
+        pop = self.strip("Music_Audio").hotkey_popover("mute")
+        self.addCleanup(pop.unparent)
+        pop.start_capture("music:mute")
+        self.controller.stop()       # window closed, logout, SIGTERM
+        self.assertEqual(self.hk_log[-1][0], "apply")
+
+    def test_heal_restores_a_capture_that_never_finished(self):
+        self.hk_suspended = True     # the last window died while capturing
+        self.controller.heal_hotkeys()
+        self.assertEqual(self.hk_log, [("apply", self.keys)])
+
+    def test_heal_does_nothing_normally(self):
+        self.controller.heal_hotkeys()
+        self.assertEqual(self.hk_log, [])

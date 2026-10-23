@@ -4,7 +4,7 @@
 #   target: a channel key from ~/.config/audio-mixer/channels.conf (default,
 #           discord, ...), or mic (the Mixer Mic), fx (the EasyEffects strip),
 #           all (All Audio)
-#   action: mute | up | down
+#   action: mute | up | down | A1-A4 (toggle that output; channels and fx)
 #
 # Volume is applied directly to the strip's node, so each strip's level is
 # independent of the others and of the hardware slider. The current level is
@@ -14,6 +14,7 @@
 
 STEP=1
 FIFO="${AUDIO_OSD_FIFO:-/tmp/audio-osd.fifo}"
+MIXER="${AUDIO_MIXER:-$(dirname "$(readlink -f "$0")")/audio-mixer}"
 CHANNELS="$HOME/.config/audio-mixer/channels.conf"
 
 KIND=sink      # sink or source
@@ -34,6 +35,14 @@ esac
 
 # Auto-start OSD daemon if its pipe is missing.
 [ ! -p "$FIFO" ] && { nohup "$HOME/.local/bin/audio-osd" >/dev/null 2>&1 & sleep 0.3; }
+
+case "$2" in
+    A[1-4])  # output toggle: audio-mixer says what it did ("Music A2 on")
+        MSG=$("$MIXER" out "$1" "$2" toggle 2>/dev/null) || exit 1
+        echo "$MSG" > "$FIFO" &
+        exit 0
+        ;;
+esac
 
 VOL=$(pactl get-$KIND-volume "$SINK" 2>/dev/null | grep -oP '/\s*\K[0-9]+(?=%)' | head -1)
 [ -z "$VOL" ] && exit 1   # node not up (PipeWire restarting) — touch nothing

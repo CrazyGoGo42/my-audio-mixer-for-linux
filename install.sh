@@ -349,7 +349,7 @@ ok "Mixer window in your app launcher (\"Audio Mixer\") and starting at login"
 # `audio-mixer hotkeys set <action> <keys>`.
 if [ -z "$SKIP_KEYBINDINGS" ]; then
     info "Setting up keyboard shortcuts..."
-    ok "$("$BIN_DIR/audio-mixer" hotkeys apply)"
+    if HK_OUT=$("$BIN_DIR/audio-mixer" hotkeys apply 2>&1); then ok "$HK_OUT"; else warn "$HK_OUT"; fi
     echo ""
     "$BIN_DIR/audio-mixer" hotkeys list | awk '$2 != "-" { printf "  %-28s %s\n", substr($0, index($0, $3)), $2 }'
 fi

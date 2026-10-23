@@ -57,7 +57,8 @@ def _run(argv):
 class Controller:
     def __init__(self, channels, read_snapshot=None, read_status=None, run=None, run_command=None,
                  remember=None, route_now=None, update_state=None,
-                 load_hotkeys=None, save_hotkeys=None, apply_hotkeys=None, remove_hotkeys=None):
+                 load_hotkeys=None, save_hotkeys=None, apply_hotkeys=None, remove_hotkeys=None,
+                 hotkeys_suspended=None):
         self.channels = channels
         self._read_snapshot = read_snapshot or live.read_snapshot
         self._read_status = read_status or globals()["read_status"]
@@ -70,8 +71,9 @@ class Controller:
         self._load_hotkeys = load_hotkeys or (lambda: hotkeys.load(self.channels))
         self._save_hotkeys = save_hotkeys or hotkeys.save
         self._apply_hotkeys = apply_hotkeys or (
-            lambda keys: hotkeys.apply_to_gnome(hotkeys.bindings(keys, bin_dir, self.channels)))
-        self._remove_hotkeys = remove_hotkeys or hotkeys.remove_from_gnome
+            lambda keys: hotkeys.resume(hotkeys.bindings(keys, bin_dir, self.channels)))
+        self._remove_hotkeys = remove_hotkeys or hotkeys.suspend
+        self._hotkeys_suspended = hotkeys_suspended or hotkeys.suspended
         self.snapshot = live.Snapshot()
         self.status = None
         self.views = []
@@ -151,6 +153,12 @@ class Controller:
     def resume_hotkeys(self):
         self._apply_hotkeys(self._load_hotkeys())
 
+    def heal_hotkeys(self):
+        """Put our shortcuts back if a capture never finished (this window is
+        stopping mid-capture, or an earlier one died)."""
+        if self._hotkeys_suspended():
+            self.resume_hotkeys()
+
     def confirm_app(self, row):
         """A NEW app is fine where it is: remember that, move nothing."""
         self._remember(row.props, row.sink)
@@ -166,12 +174,21 @@ class Controller:
             pass
         self.refresh()
 
+    @staticmethod
+    def _try(fn):
+        try:
+            fn()
+        except RuntimeError:  # dconf unreachable: the daemon heals later
+            pass
+
     # ---------------------------------------------------------- live updates
     def start(self):
+        self._try(self.heal_hotkeys)
         threading.Thread(target=self._events, daemon=True).start()
         GLib.timeout_add_seconds(1, self._check_state_file)
 
     def stop(self):
+        self._try(self.heal_hotkeys)
         self._stopping = True
         if self._sub and self._sub.poll() is None:
             self._sub.kill()

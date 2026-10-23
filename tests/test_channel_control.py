@@ -4,6 +4,7 @@ import os
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "audio-channel-control")
@@ -56,6 +57,22 @@ class ChannelControlTest(unittest.TestCase):
                          ["set-sink-mute EE_Return 0", "set-sink-volume EE_Return 49%"])
         os.remove(self.log)
         self.assertEqual(self.run_ctl("all", "mute")[1], ["set-source-mute All_Audio toggle"])
+
+    def test_slot_hotkey_toggles_and_shows_the_osd(self):
+        mixer = os.path.join(self.dir.name, "bin", "audio-mixer")
+        with open(mixer, "w") as f:
+            f.write(f'#!/bin/sh\necho "mixer $*" >> {self.log}\necho "Music A2 on"\n')
+        os.chmod(mixer, 0o755)
+        self.env["AUDIO_MIXER"] = mixer
+        self.assertEqual(self.run_ctl("music", "A2")[0], 0)
+        with open(self.log) as f:
+            self.assertIn("mixer out music A2 toggle", f.read())
+        for _ in range(40):          # the OSD write is backgrounded
+            if os.path.exists(self.osd) and os.path.getsize(self.osd):
+                break
+            time.sleep(0.05)
+        with open(self.osd) as f:
+            self.assertEqual(f.read().strip(), "Music A2 on")
 
     def test_unknown_target_does_nothing(self):
         code, calls = self.run_ctl("games", "up")

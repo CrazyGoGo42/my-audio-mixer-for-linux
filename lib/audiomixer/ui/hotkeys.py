@@ -83,9 +83,19 @@ class HotkeyPopover(Gtk.Popover):
         self.message.set_label(text or "")
         self.message.set_visible(bool(text))
 
+    def _gnome(self, fn, *args):
+        """Run a controller call that writes GNOME's shortcuts; False (and say
+        why) if dconf refused."""
+        try:
+            fn(*args)
+            return True
+        except RuntimeError as e:
+            self._say(f"Couldn't change the GNOME shortcuts: {e}")
+            return False
+
     def start_capture(self, action):
-        if self.capturing is None:
-            self.controller.suspend_hotkeys()
+        if self.capturing is None and not self._gnome(self.controller.suspend_hotkeys):
+            return
         self.capturing = action
         self._say("Press the new combination — Esc cancels.")
         self.refresh()
@@ -101,26 +111,27 @@ class HotkeyPopover(Gtk.Popover):
         accel = Gtk.accelerator_name(keyval, state & Gtk.accelerator_get_default_mod_mask())
         if not hotkeys.acceptable(accel):
             self._say(f"{pretty(accel)} would get in the way of typing — "
-                      "add Ctrl, Alt or Super (F-, keypad and media keys work alone).")
+                      "add Ctrl, Alt or Super (F- and media keys work alone).")
             return True
         action, self.capturing = self.capturing, None
-        self.controller.set_hotkey(action, accel)  # saves and re-binds everything
-        self._say("")
+        if self._gnome(self.controller.set_hotkey, action, accel):  # saves and re-binds everything
+            self._say("")
         self.refresh()
         return True
 
     def cancel(self):
+        ok = True
         if self.capturing is not None:
             self.capturing = None
-            self.controller.resume_hotkeys()
-        self._say("")
+            ok = self._gnome(self.controller.resume_hotkeys)
+        if ok:
+            self._say("")
         self.refresh()
 
     def clear(self, action):
-        if self.capturing is not None:
-            self.capturing = None  # set_hotkey below re-binds what was suspended
-        self.controller.set_hotkey(action, None)
-        self._say("")
+        self.capturing = None  # set_hotkey below re-binds what was suspended
+        if self._gnome(self.controller.set_hotkey, action, None):
+            self._say("")
         self.refresh()
 
     def _on_closed(self, _popover):

@@ -12,6 +12,7 @@ runs, the router daemon leaves new apps to it instead of popping up a dialog.
 """
 
 import os
+import signal
 import sys
 
 # The shared audiomixer package: lib/ next to bin/ in the repo, or installed.
@@ -64,7 +65,11 @@ def main():
             GLib.timeout_add(1200, lambda: GLib.timeout_add(200, snap) and False)
 
     app.connect("activate", activate)
+    # stop() puts back hotkeys a capture had suspended; SIGTERM (logout,
+    # pkill) and Ctrl+C go through the same clean shutdown.
     app.connect("shutdown", lambda app: [c.stop() for c in controllers])
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda: app.quit() or GLib.SOURCE_REMOVE)
     return app.run(sys.argv[:1])
 
 

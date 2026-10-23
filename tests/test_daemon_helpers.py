@@ -168,15 +168,34 @@ class VolumeTickTest(unittest.TestCase):
         self.assertEqual(saved["_mute"]["Music_Audio"], False)
         self.assertEqual([c for c in self.calls() if "get-" in c], [])  # no per-node calls
 
-    def test_mutes_restored_with_volumes(self):
-        # A muted mic must come back muted after a reboot or PipeWire restart.
+    def test_mutes_restored_with_volumes_but_nothing_is_unmuted(self):
+        # A muted mic must come back muted after a reboot or PipeWire restart;
+        # restoring never unmutes (a late second pass would undo a fresh mute).
         with open(self.d.VOL_FILE, "w") as f:
             json.dump(dict(self.SAVED, _mute={"Mic_In": True, "Music_Audio": False}), f)
         self.d.volume_tick(self.graph())
         calls = self.calls()
         self.assertIn("set-source-volume Mic_In 50000", calls)
         self.assertIn("set-source-mute Mic_In 1", calls)
-        self.assertIn("set-sink-mute Music_Audio 0", calls)
+        self.assertNotIn("set-sink-mute Music_Audio 0", calls)
+
+    def test_stopping_saves_the_latest_levels(self):
+        # Mute the mic and reboot within the 10 s poll: it must stay muted.
+        self.d.PID_FILE = os.path.join(self.tmp.name, "pid")
+        for _ in range(3):
+            self.d.volume_tick(self.graph())
+        self.write_saved()                     # the last poll ran before the change
+        with self.assertRaises(SystemExit):
+            self.d.cleanup()
+        self.assertEqual(self.saved()["Music_Audio"], 65536)
+        self.assertTrue(self.saved()["_mute"]["Mic_In"])
+
+    def test_stopping_mid_restore_saves_nothing(self):
+        self.d.PID_FILE = os.path.join(self.tmp.name, "pid")
+        self.d.volume_tick(self.graph())       # fresh 100% nodes, restore still pending
+        with self.assertRaises(SystemExit):
+            self.d.cleanup()
+        self.assertEqual(self.saved(), self.SAVED)
 
     def test_old_volume_files_still_load(self):
         self.d.volume_tick(self.graph())       # SAVED has no "_mute" (files from before)
@@ -221,3 +240,31 @@ class VolumeTickTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HotkeyHealDaemonTest(unittest.TestCase):
+    """The window suspends our shortcuts while you press a new combination; if
+    it dies before putting them back, the daemon does."""
+
+    def setUp(self):
+        import types
+        self.d = load_daemon()
+        self.healed, self.marker = [], True
+        self.d.hotkeys = types.SimpleNamespace(suspended=lambda: self.marker,
+                                               heal=lambda channels, bin_dir: self.healed.append(bin_dir))
+
+    def test_heals_when_the_window_is_gone(self):
+        self.d.window_running = lambda: False
+        self.d.heal_hotkeys()
+        self.assertEqual(len(self.healed), 1)
+
+    def test_leaves_a_capture_in_progress_alone(self):
+        self.d.window_running = lambda: True
+        self.d.heal_hotkeys()
+        self.assertEqual(self.healed, [])
+
+    def test_no_marker_costs_no_dbus_call(self):
+        self.marker = False
+        self.d.window_running = lambda: self.fail("asked D-Bus without a reason")
+        self.d.heal_hotkeys()
+        self.assertEqual(self.healed, [])
