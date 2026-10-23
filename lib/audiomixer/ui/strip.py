@@ -180,8 +180,17 @@ class StripWidget(Gtk.Box):
         return popover
 
     def right_click(self, widget, control):
+        """Right-click opens the hotkey popover. It runs before the widget's own
+        handling and claims the click: otherwise a fader starts a drag on the
+        press, the popover's grab swallows the release, and the volume keeps
+        running on its own (seen in review)."""
         click = Gtk.GestureClick(button=3)
-        click.connect("pressed", lambda *_: self.hotkey_popover(control).popup())
+        click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+
+        def pressed(gesture, *_):
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self.hotkey_popover(control).popup()
+        click.connect("pressed", pressed)
         widget.add_controller(click)
 
     def on_scroll(self, _controller, _dx, dy, scale=None):
