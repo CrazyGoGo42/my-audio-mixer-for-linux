@@ -52,7 +52,6 @@ info "Removing scripts..."
 for f in $SCRIPTS; do
     rm -f "$HOME/.local/bin/$f"
 done
-rm -rf "$HOME/.local/lib/audio-mixer"
 # Legacy artifacts from older versions
 rm -f "$HOME/.local/bin/setup-audio-keybindings.sh"
 rm -rf "$HOME/.local/state/audio-router"
@@ -87,24 +86,16 @@ fi
 
 # ---------- GNOME keybindings ----------
 info "Removing keyboard shortcuts..."
-python3 - <<'PY' || true
-import re, subprocess
-KEYS = "org.gnome.settings-daemon.plugins.media-keys"
-SCHEMA = KEYS + ".custom-keybinding"
-
-def gs(*args):
-    return subprocess.run(["gsettings", *args], capture_output=True, text=True).stdout.strip()
-
-kept = []
-for path in re.findall(r"'([^']*)'", gs("get", KEYS, "custom-keybindings")):
-    if "audio-channel-control" in gs("get", f"{SCHEMA}:{path}", "command"):
-        for k in ("name", "command", "binding"):
-            gs("reset", f"{SCHEMA}:{path}", k)
-    else:
-        kept.append(path)
-gs("set", KEYS, "custom-keybindings", "[" + ", ".join(f"'{p}'" for p in kept) + "]")
+python3 - "$HOME/.local/lib/audio-mixer" <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, sys.argv[1])
+from audiomixer.hotkeys import remove_from_gnome
+remove_from_gnome()
 PY
 ok "Keybindings removed"
+
+# The shared package goes last: the steps above still use it.
+rm -rf "$HOME/.local/lib/audio-mixer"
 
 # ---------- Restart PipeWire ----------
 info "Restarting PipeWire..."

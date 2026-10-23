@@ -343,85 +343,15 @@ printf 'X-GNOME-Autostart-enabled=true\nX-GNOME-Autostart-Delay=5\n' >> "$AUTOST
 ok "Mixer window in your app launcher (\"Audio Mixer\") and starting at login"
 
 # ---------- GNOME keybindings ----------
+# From ~/.config/audio-mixer/hotkeys.json (created from channels.conf's numpad
+# keys on first run). Keeps any of your own custom shortcuts; replaces ours.
+# Change them in the mixer window (right-click a control) or with
+# `audio-mixer hotkeys set <action> <keys>`.
 if [ -z "$SKIP_KEYBINDINGS" ]; then
     info "Setting up keyboard shortcuts..."
-    # Built from channels.conf. Keeps any of your own custom shortcuts, replaces
-    # every one of ours (recognised by calling audio-channel-control).
-    COUNT=$(python3 - "$MIXER_DIR/channels.conf" "$BIN_DIR/audio-channel-control" <<'PY'
-import re, subprocess, sys
-channels_file, script = sys.argv[1], sys.argv[2]
-KEYS = "org.gnome.settings-daemon.plugins.media-keys"
-SCHEMA = KEYS + ".custom-keybinding"
-GPATH = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings"
-# With NumLock off the numpad sends different keysyms; bind those too.
-NUMLOCK_OFF = {
-    "KP_0": "KP_Insert", "KP_1": "KP_End", "KP_2": "KP_Down", "KP_3": "KP_Next",
-    "KP_4": "KP_Left", "KP_5": "KP_Begin", "KP_6": "KP_Right", "KP_7": "KP_Home",
-    "KP_8": "KP_Up", "KP_9": "KP_Prior", "KP_Decimal": "KP_Delete",
-}
-
-def gs(*args):
-    return subprocess.run(["gsettings", *args], capture_output=True, text=True).stdout.strip()
-
-def gv(s):
-    """A GVariant string literal."""
-    return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'"
-
-bindings = []
-for line in open(channels_file):
-    parts = line.split("#", 1)[0].split()
-    if len(parts) < 6:
-        continue
-    key, label = parts[0], " ".join(parts[5:])
-    for action, sym, what in zip(("mute", "down", "up"), parts[2:5], ("Mute", "Vol Down", "Vol Up")):
-        if sym == "-":
-            continue
-        cmd = f"{script} {key} {action}"
-        bindings.append((f"{label} {what}", cmd, f"<Ctrl>{sym}"))
-        if sym in NUMLOCK_OFF:
-            bindings.append((f"{label} {what} (NumLock off)", cmd, f"<Ctrl>{NUMLOCK_OFF[sym]}"))
-
-kept = []
-for path in re.findall(r"'([^']*)'", gs("get", KEYS, "custom-keybindings")):
-    if "audio-channel-control" in gs("get", f"{SCHEMA}:{path}", "command"):
-        for k in ("name", "command", "binding"):
-            gs("reset", f"{SCHEMA}:{path}", k)
-    else:
-        kept.append(path)
-
-ours, n = [], 100
-for name, cmd, binding in bindings:
-    while f"{GPATH}/custom{n}/" in kept:
-        n += 1
-    path = f"{GPATH}/custom{n}/"
-    n += 1
-    gs("set", f"{SCHEMA}:{path}", "name", gv(name))
-    gs("set", f"{SCHEMA}:{path}", "command", gv(cmd))
-    gs("set", f"{SCHEMA}:{path}", "binding", gv(binding))
-    ours.append(path)
-gs("set", KEYS, "custom-keybindings", "[" + ", ".join(gv(p) for p in kept + ours) + "]")
-print(len(ours))
-PY
-)
-    ok "$COUNT keyboard shortcuts configured"
-
+    ok "$("$BIN_DIR/audio-mixer" hotkeys apply)"
     echo ""
-    printf "  %-10s  %-13s  %-13s  %-13s\n" "Channel" "Mute" "Vol Down" "Vol Up"
-    awk '{ sub(/#.*/, "") } NF >= 6 {
-        l = $6; for (i = 7; i <= NF; i++) l = l " " $i
-        print l "|" $3 "|" $4 "|" $5 }' "$MIXER_DIR/channels.conf" |
-    while IFS='|' read -r label mute down up; do
-        key() {
-            case "$1" in
-                -) echo "-" ;;
-                KP_Add) echo "Ctrl+Num+" ;;  KP_Subtract) echo "Ctrl+Num-" ;;
-                KP_Multiply) echo "Ctrl+Num*" ;;  KP_Divide) echo "Ctrl+Num/" ;;
-                KP_Delete|KP_Decimal) echo "Ctrl+NumDel" ;;
-                *) echo "Ctrl+Num${1#KP_}" ;;
-            esac
-        }
-        printf "  %-10s  %-13s  %-13s  %-13s\n" "$label" "$(key "$mute")" "$(key "$down")" "$(key "$up")"
-    done
+    "$BIN_DIR/audio-mixer" hotkeys list | awk '$2 != "-" { printf "  %-28s %s\n", substr($0, index($0, $3)), $2 }'
 fi
 
 # ---------- First backup ----------

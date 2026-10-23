@@ -12,6 +12,9 @@ audio-mixer — control the mixer from the command line (the window uses it too)
                                                 which device a slot is
     audio-mixer eq <channel> bass|treble <dB>   -12 … +12, 0 = flat
     audio-mixer mic auto|<device>               which real mic feeds EasyEffects
+    audio-mixer hotkeys list|apply              your hotkeys (~/.config/audio-mixer/hotkeys.json)
+    audio-mixer hotkeys set <action> <keys>     e.g. set mic:mute "<Ctrl><Alt>m"
+    audio-mixer hotkeys clear <action>
 
 <channel> is a key or label from channels.conf (e.g. desktop, discord, music).
 Changes are saved to ~/.config/audio-mixer/mixer.json and take effect at once;
@@ -29,6 +32,7 @@ for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "li
     if os.path.isdir(os.path.join(_lib, "audiomixer")):
         sys.path.insert(0, _lib)
         break
+from audiomixer import hotkeys  # noqa: E402
 from audiomixer.commands import devices_list, run, status_dict  # noqa: E402
 from audiomixer.config import AUTO_MIC, DEFAULT_OUTPUT, SLOTS, load_channels, load_state  # noqa: E402
 from audiomixer.pwgraph import read_graph  # noqa: E402
@@ -57,6 +61,11 @@ def main(argv):
         print(__doc__.strip())
         return 0
     channels = load_channels()
+    if argv[0] == "hotkeys":
+        code, text = hotkeys.cli(argv[1:], channels, os.path.expanduser("~/.local/bin"))
+        if text:
+            print(text, file=sys.stderr if code else sys.stdout)
+        return code
     if argv[0] in ("status", "devices"):
         graph = read_graph()
         data = (status_dict(channels, load_state(channels), graph) if argv[0] == "status"
