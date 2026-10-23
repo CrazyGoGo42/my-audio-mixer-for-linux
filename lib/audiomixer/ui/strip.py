@@ -196,7 +196,7 @@ class StripWidget(Gtk.Box):
 
     def _on_mute_toggled(self, button):
         if not self._updating:
-            self.controller.toggle_mute(self.name, self.kind)
+            self.controller.set_mute(self.name, self.kind, button.get_active())
 
 
 # --------------------------------------------------------------------------- #

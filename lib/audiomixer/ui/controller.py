@@ -119,8 +119,10 @@ class Controller:
             self._run(["pw-cli", "set-param", str(live.node_id), "Props",
                        f'{{ params = [ "bass:Gain" {float(cs.bass)} "treble:Gain" {float(cs.treble)} ] }}'])
 
-    def toggle_mute(self, name, kind):
-        self._run(["pactl", f"set-{kind}-mute", name, "toggle"])
+    def set_mute(self, name, kind, on):
+        """Absolute (never "toggle"), so a click can't undo a hotkey mute that
+        landed just before the window caught up."""
+        self._run(["pactl", f"set-{kind}-mute", name, "1" if on else "0"])
 
     def command(self, argv):
         """A routing change (fx/out/slot/eq/mic); the view updates from the

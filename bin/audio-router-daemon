@@ -282,7 +282,7 @@ def snapshot_volumes():
     """{node: raw_volume} for every volume target currently present — one
     `pactl -f json list` per kind instead of one pactl per node."""
     kinds = {kind for _, kind in VOLUME_TARGETS}
-    raw = {}
+    raw, muted = {}, {}
     for kind in kinds:
         try:
             entries = json.loads(run(["pactl", "-f", "json", "list", kind + "s"]) or "[]")
@@ -291,15 +291,20 @@ def snapshot_volumes():
         for e in entries if isinstance(entries, list) else []:
             try:
                 raw[(e["name"], kind)] = int(next(iter(e["volume"].values()))["value"])
+                muted[(e["name"], kind)] = bool(e.get("mute"))
             except (KeyError, TypeError, ValueError, StopIteration):
                 pass
-    return {name: raw[(name, kind)] for name, kind in VOLUME_TARGETS if (name, kind) in raw}
+    vols = {name: raw[(name, kind)] for name, kind in VOLUME_TARGETS if (name, kind) in raw}
+    if vols:
+        # Mutes survive reboots too: a muted mic must come back muted.
+        vols["_mute"] = {name: muted[(name, kind)] for name, kind in VOLUME_TARGETS if (name, kind) in muted}
+    return vols
 
 
 def save_volumes():
     """Persist current volumes — only a complete, changed snapshot."""
     vols = snapshot_volumes()
-    if not vols or len(vols) < len(VOLUME_TARGETS):
+    if not vols or len(vols) - ("_mute" in vols) < len(VOLUME_TARGETS):
         return  # not all up yet; never persist a partial snapshot
     try:
         with open(VOL_FILE) as f:
@@ -322,10 +327,14 @@ def restore_volumes(path=None, targets=None, names=None):
             vols = json.load(f)
     except Exception:
         return
+    mutes = vols.get("_mute") if isinstance(vols.get("_mute"), dict) else {}  # older files have none
     for name, raw in vols.items():
         if name in kinds and (names is None or name in names):
             subprocess.run(["pactl", f"set-{kinds[name]}-volume", name, str(int(raw))],
                            capture_output=True, text=True)
+            if name in mutes:
+                subprocess.run(["pactl", f"set-{kinds[name]}-mute", name, "1" if mutes[name] else "0"],
+                               capture_output=True, text=True)
 
 
 def volume_tick(graph):

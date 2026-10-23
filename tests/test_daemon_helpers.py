@@ -96,7 +96,8 @@ class VolumeTickTest(unittest.TestCase):
         fake = os.path.join(self.tmp.name, "pactl")
         # Every node reports a fresh 100%, answering only the cheap JSON lists
         # (one call per kind instead of one per node).
-        listing = json.dumps([{"name": n, "volume": {"front-left": {"value": 65536, "value_percent": "100%"}}}
+        listing = json.dumps([{"name": n, "mute": n == "Mic_In",
+                               "volume": {"front-left": {"value": 65536, "value_percent": "100%"}}}
                               for n in ("Default_Audio", "Music_Audio", "EE_Return", "Mic_In", "All_Audio")])
         with open(os.path.join(self.tmp.name, "listing.json"), "w") as f:
             f.write(listing)
@@ -161,8 +162,27 @@ class VolumeTickTest(unittest.TestCase):
     def test_saving_reads_all_volumes_in_two_pactl_calls(self):
         for _ in range(3):
             self.d.volume_tick(self.graph())
-        self.assertEqual(self.saved(), {n: 65536 for n in self.SAVED})
+        saved = self.saved()
+        self.assertEqual({k: v for k, v in saved.items() if k != "_mute"}, {n: 65536 for n in self.SAVED})
+        self.assertEqual(saved["_mute"]["Mic_In"], True)   # the muted mic is remembered
+        self.assertEqual(saved["_mute"]["Music_Audio"], False)
         self.assertEqual([c for c in self.calls() if "get-" in c], [])  # no per-node calls
+
+    def test_mutes_restored_with_volumes(self):
+        # A muted mic must come back muted after a reboot or PipeWire restart.
+        with open(self.d.VOL_FILE, "w") as f:
+            json.dump(dict(self.SAVED, _mute={"Mic_In": True, "Music_Audio": False}), f)
+        self.d.volume_tick(self.graph())
+        calls = self.calls()
+        self.assertIn("set-source-volume Mic_In 50000", calls)
+        self.assertIn("set-source-mute Mic_In 1", calls)
+        self.assertIn("set-sink-mute Music_Audio 0", calls)
+
+    def test_old_volume_files_still_load(self):
+        self.d.volume_tick(self.graph())       # SAVED has no "_mute" (files from before)
+        calls = self.calls()
+        self.assertIn("set-sink-volume Music_Audio 16384", calls)
+        self.assertEqual([c for c in calls if "-mute" in c], [])
 
     def test_present_targets_are_restored_but_nothing_saved_until_all_exist(self):
         g = self.graph()

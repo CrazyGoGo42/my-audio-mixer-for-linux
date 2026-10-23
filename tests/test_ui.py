@@ -119,9 +119,11 @@ class StripTest(UiTestBase):
         self.controller.refresh()
         self.assertEqual(music.scale.get_value(), 25)
 
-    def test_mute_button_toggles_through_pactl(self):
+    def test_mute_button_sends_absolute_state(self):
+        # Absolute, not "toggle": a click can't undo a hotkey mute that landed
+        # just before the window refreshed.
         self.strip("Mic_In").mute.set_active(True)
-        self.assertEqual(self.calls, [["pactl", "set-source-mute", "Mic_In", "toggle"]])
+        self.assertEqual(self.calls, [["pactl", "set-source-mute", "Mic_In", "1"]])
 
     def test_strip_shows_dash_when_absent(self):
         self.snap = snapshot(Browser_Audio=(None, False))
