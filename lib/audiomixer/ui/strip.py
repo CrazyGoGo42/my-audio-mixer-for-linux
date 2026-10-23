@@ -11,64 +11,85 @@ WRITE_DELAY_MS = 60  # coalesce slider writes while dragging
 
 
 class StripWidget(Gtk.Box):
-    def __init__(self, controller, name, kind, title):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    """A strip: tall card (wide layout) or one slim row (compact layout). Both
+    share the same slider/mute logic, so the two layouts can't disagree."""
+
+    def __init__(self, controller, name, kind, title, compact=False):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL if compact else Gtk.Orientation.VERTICAL,
+                         spacing=6)
         self.controller, self.name, self.kind, self.title = controller, name, kind, title
-        self.add_css_class("card")
-        for side in ("top", "bottom", "start", "end"):
-            getattr(self, f"set_margin_{side}")(0)
-        self.set_size_request(118, -1)
         self.touched_at = 0.0
         self._updating = False
         self._pending = None
         self._write_id = None
 
-        heading = Gtk.Label(label=title)
-        heading.add_css_class("heading")
-        heading.set_margin_top(10)
+        self.heading = Gtk.Label(label=title)
+        self.heading.add_css_class("heading")
         self.header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        self.header.append(heading)
-        self.heading = heading
-        self.append(self.header)
-
-        # Room for strip-specific controls above the fader (FX, Bass/Treble).
+        # Strip-specific controls go above the fader (FX, Bass/Treble) and
+        # below it (outputs); the compact layout doesn't show them.
         self.top = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL if compact else Gtk.Orientation.VERTICAL, 0, 100, 1)
+        self.scale.set_draw_value(False)
+        self.scale.connect("value-changed", self._on_value_changed)
+        self.meter = Gtk.LevelBar()
+        self.meter.set_min_value(0)
+        self.meter.set_max_value(1)
+        self.percent = Gtk.Label(label="—")
+        self.percent.add_css_class("numeric")
+        self.mute = Gtk.ToggleButton(label="Mute")
+        self.mute.connect("toggled", self._on_mute_toggled)
+        if compact:
+            self._build_compact()
+        else:
+            self._build_wide()
+
+    def _build_wide(self):
+        self.add_css_class("card")
+        self.set_size_request(118, -1)
+        self.heading.set_margin_top(10)
+        self.header.append(self.heading)
+        self.append(self.header)
         self.top.set_margin_start(8)
         self.top.set_margin_end(8)
         self.append(self.top)
-
         fader = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         fader.set_halign(Gtk.Align.CENTER)
         fader.set_vexpand(True)
-        self.scale = Gtk.Scale.new_with_range(Gtk.Orientation.VERTICAL, 0, 100, 1)
         self.scale.set_inverted(True)
-        self.scale.set_draw_value(False)
         self.scale.set_size_request(-1, 170)
         self.scale.set_vexpand(True)
-        self.scale.connect("value-changed", self._on_value_changed)
-        self.meter = Gtk.LevelBar(orientation=Gtk.Orientation.VERTICAL)
+        self.meter.set_orientation(Gtk.Orientation.VERTICAL)
         self.meter.set_inverted(True)
-        self.meter.set_min_value(0)
-        self.meter.set_max_value(1)
         self.meter.set_size_request(8, -1)
         fader.append(self.scale)
         fader.append(self.meter)
         self.append(fader)
-
-        self.percent = Gtk.Label(label="—")
-        self.percent.add_css_class("numeric")
         self.append(self.percent)
-
-        self.mute = Gtk.ToggleButton(label="Mute")
         self.mute.set_halign(Gtk.Align.CENTER)
-        self.mute.connect("toggled", self._on_mute_toggled)
         self.append(self.mute)
-
-        # Room below (output slot toggles / where it plays).
-        self.bottom = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.bottom.set_margin_bottom(10)
         self.bottom.set_halign(Gtk.Align.CENTER)
         self.append(self.bottom)
+
+    def _build_compact(self):
+        self.heading.set_xalign(0)
+        self.heading.set_width_chars(10)
+        self.append(self.heading)
+        middle = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        middle.set_hexpand(True)
+        middle.set_valign(Gtk.Align.CENTER)
+        self.scale.set_hexpand(True)
+        self.meter.set_size_request(-1, 4)
+        middle.append(self.scale)
+        middle.append(self.meter)
+        self.append(middle)
+        self.percent.set_width_chars(5)
+        self.append(self.percent)
+        self.mute.set_valign(Gtk.Align.CENTER)
+        self.append(self.mute)
 
     # ----------------------------------------------------------------- live
     def update(self, live, status=None):
@@ -136,10 +157,24 @@ class MenuButton(Gtk.MenuButton):
     """A button with a plain list of choices; `items` = [(text, callback)]."""
 
     def __init__(self, label=""):
-        super().__init__(label=label)
+        super().__init__()
         self.items = []
         self._popover = Gtk.Popover()
         self.set_popover(self._popover)
+        content = Gtk.Box(spacing=4)
+        self._label = Gtk.Label(label=label)
+        self._label.set_ellipsize(3)  # Pango.EllipsizeMode.END — long device names
+        self._label.set_max_width_chars(30)
+        content.append(self._label)
+        content.append(Gtk.Image.new_from_icon_name("pan-down-symbolic"))
+        self.set_child(content)
+
+    def set_label(self, label):
+        self._label.set_label(label)
+        self.set_tooltip_text(label)
+
+    def get_label(self):
+        return self._label.get_label()
 
     def set_items(self, items):
         if [t for t, _ in items] == [t for t, _ in self.items]:

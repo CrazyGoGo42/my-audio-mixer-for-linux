@@ -29,7 +29,8 @@ from gi.repository import Adw, GLib  # noqa: E402
 
 from audiomixer.config import load_channels  # noqa: E402
 from audiomixer.ui.controller import Controller  # noqa: E402
-from audiomixer.ui.window import MixerWindow, save_png  # noqa: E402
+from audiomixer.ui.levels import Meters  # noqa: E402
+from audiomixer.ui.window import MixerWindow, follow_visibility, save_png  # noqa: E402
 
 APP_ID = "io.github.crazygogo42.AudioMixer"  # the router daemon checks this name
 
@@ -46,6 +47,7 @@ def main():
         controller = Controller(load_channels())
         controllers.append(controller)
         win = MixerWindow(controller, application=app)
+        follow_visibility(win, Meters(win))
         controller.refresh(status_too=True)
         controller.start()
         win.present()

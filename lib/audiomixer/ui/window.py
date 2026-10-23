@@ -1,10 +1,12 @@
 """The mixer window: Mic | channels | EasyEffects | All Audio."""
 
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gdk, Gtk
 
 from ..config import ALL_AUDIO, EE_RETURN, MIC_IN
 from ..live import strip_targets
 from .apps import AppsList
+from .compact import CompactView
+from .settings import load_size, save_size
 from .strip import SLOTS, ChannelStrip, EasyEffectsStrip, MenuButton, MicStrip, StripWidget
 
 
@@ -32,7 +34,8 @@ def save_png(widget, path):
 class MixerWindow(Adw.ApplicationWindow):
     def __init__(self, controller, application=None):
         super().__init__(application=application, title="Audio Mixer")
-        self.set_default_size(1040, 760)
+        # First run: as wide as everything needs (-1); later: the size it last had.
+        self.set_default_size(*(load_size() or (-1, 760)))
         self.controller = controller
 
         toolbar = Adw.ToolbarView()
@@ -81,7 +84,28 @@ class MixerWindow(Adw.ApplicationWindow):
         apps_scroll.set_child(self.apps)
         self.body.append(apps_scroll)
 
-        toolbar.set_content(self.body)
+        # Narrow window -> compact rows (a tiny mixer in a corner).
+        self.compact = CompactView(controller, lambda name: strip_title(channels, name))
+        self.compact_strips = self.compact.strips
+        compact_scroll = Gtk.ScrolledWindow()
+        compact_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        compact_scroll.set_child(self.compact)
+        # Wider than the window? Scroll sideways until the compact breakpoint.
+        self.wide_scroll = Gtk.ScrolledWindow()
+        self.wide_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.wide_scroll.set_propagate_natural_width(True)
+        self.wide_scroll.set_propagate_natural_height(True)
+        self.wide_scroll.set_child(self.body)
+        self.stack = Gtk.Stack()
+        self.stack.add_named(self.wide_scroll, "wide")
+        self.stack.add_named(compact_scroll, "compact")
+        self.stack.set_visible_child_name("wide")
+        breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 720sp"))
+        breakpoint.add_setter(self.stack, "visible-child-name", "compact")
+        self.add_breakpoint(breakpoint)
+        self.set_size_request(320, 300)
+
+        toolbar.set_content(self.stack)
         self.set_content(toolbar)
         controller.subscribe(self)
 
@@ -89,6 +113,7 @@ class MixerWindow(Adw.ApplicationWindow):
         for strip in self.strips:
             strip.update(snapshot.strips.get(strip.name), status)
         self.apps.update(snapshot, status)
+        self.compact.update(snapshot, status)
         if status:
             self._update_slots(status)
 
@@ -110,3 +135,26 @@ class MixerWindow(Adw.ApplicationWindow):
                              + [(names[d["name"]], lambda s=slot, n=d["name"]: run(["slot", s, n]))
                                 for d in outputs]
                              + [("Off", lambda s=slot: run(["slot", s, "none"]))])
+
+
+def follow_visibility(window, meters):
+    """Meters run only while the window is shown and not minimized; the size is
+    remembered when it closes."""
+    def on_state(surface, _pspec):
+        if surface.get_state() & Gdk.ToplevelState.MINIMIZED:
+            meters.stop()
+        elif window.get_mapped():
+            meters.start()
+
+    def on_map(_w):
+        window.get_surface().connect("notify::state", on_state)
+        meters.start()
+
+    def on_close(_w):
+        save_size(window.get_width(), window.get_height())
+        meters.stop()
+        return False
+
+    window.connect("map", on_map)
+    window.connect("unmap", lambda _w: meters.stop())
+    window.connect("close-request", on_close)

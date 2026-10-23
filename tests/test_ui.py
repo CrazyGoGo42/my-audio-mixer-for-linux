@@ -217,5 +217,114 @@ class PlayingNowTest(UiTestBase):
         self.assertEqual(self.moves, [])
 
 
+def Gtk_HORIZONTAL():
+    from gi.repository import Gtk
+    return Gtk.Orientation.HORIZONTAL
+
+
+class CompactTest(UiTestBase):
+    def compact_row(self, name):
+        return next(r for r in self.win.compact.strips if r.name == name)
+
+    def test_compact_has_a_row_per_strip_with_its_apps(self):
+        self.assertEqual([r.name for r in self.win.compact.strips], [n for n, _ in strip_targets(CHS)])
+        self.assertEqual(self.win.compact.app_labels["Browser_Audio"].get_label(), "Zen")
+        self.assertEqual(self.win.compact.app_labels["Default_Audio"].get_label(), "Audacity")
+        self.assertFalse(self.win.compact.app_labels["Music_Audio"].get_visible())
+
+    def test_compact_rows_show_their_titles(self):
+        row = self.compact_row("Music_Audio")
+        self.assertIs(row.heading.get_parent(), row)
+        self.assertEqual(row.heading.get_label(), "Music")
+
+    def test_wide_layout_can_shrink_below_its_natural_width(self):
+        # Wider content than the window must scroll, not overflow (libadwaita
+        # warns and clips otherwise) until the compact breakpoint takes over.
+        minimum, natural, _, _ = self.win.wide_scroll.measure(Gtk_HORIZONTAL(), -1)
+        self.assertLess(minimum, 720)
+
+    def test_compact_and_wide_show_same_volume(self):
+        self.snap = snapshot(Music_Audio=(30, True))
+        self.controller.refresh()
+        wide, compact = self.strip("Music_Audio"), self.compact_row("Music_Audio")
+        self.assertEqual((wide.scale.get_value(), wide.mute.get_active()),
+                         (compact.scale.get_value(), compact.mute.get_active()))
+        self.assertEqual(compact.scale.get_value(), 30)
+
+    def test_compact_slider_writes_like_the_wide_one(self):
+        row = self.compact_row("Music_Audio")
+        row.scale.set_value(42)
+        row.flush()
+        self.assertEqual(self.calls[0], ["pactl", "set-sink-volume", "Music_Audio", "42%"])
+
+    def test_window_has_wide_and_compact_pages(self):
+        self.assertEqual(self.win.stack.get_visible_child_name(), "wide")
+        self.assertIsNotNone(self.win.stack.get_child_by_name("compact"))
+
+
+class MeterLifecycleTest(UiTestBase):
+    def setUp(self):
+        super().setUp()
+        from audiomixer.ui.levels import Meters
+
+        test = self
+        self.readers = []
+
+        class FakeReader:
+            def __init__(self, args, on_level):
+                self.args, self.on_level, self.stopped = args, on_level, False
+                test.readers.append(self)
+
+            def start(self):
+                pass
+
+            def stop(self):
+                self.stopped = True
+        self.meters = Meters(self.win, reader=FakeReader)
+
+    def running(self):
+        return sorted(r.args[0] for r in self.readers if not r.stopped)
+
+    def test_one_meter_per_strip_and_app_while_shown(self):
+        self.meters.start()
+        self.assertEqual(self.running(), sorted([
+            "--device=Mic_In", "--device=Default_Audio.monitor", "--device=Discord_Audio.monitor",
+            "--device=Music_Audio.monitor", "--device=Browser_Audio.monitor", "--device=EE_Return.monitor",
+            "--device=All_Audio", "--monitor-stream=119", "--monitor-stream=200"]))
+
+    def test_meters_stop_when_hidden(self):
+        self.meters.start()
+        self.meters.stop()
+        self.assertEqual(self.running(), [])
+
+    def test_app_meters_follow_the_app_list(self):
+        self.meters.start()
+        self.snap.apps = [a for a in self.snap.apps if a.name == "Zen"]
+        self.controller.refresh()
+        self.assertNotIn("--monitor-stream=200", self.running())
+        self.assertIn("--monitor-stream=119", self.running())
+
+    def test_meter_level_is_post_fader_and_zero_when_muted(self):
+        from audiomixer.ui.levels import strip_level
+        self.assertEqual(strip_level(1.0, StripLive("Music_Audio", "sink", True, 50, False)), 0.125)
+        self.assertEqual(strip_level(1.0, StripLive("Music_Audio", "sink", True, 50, True)), 0.0)
+        self.assertEqual(strip_level(0.5, StripLive("Mic_In", "source", True, 80, False)), 0.5)
+        self.assertEqual(strip_level(0.5, None), 0.0)
+
+
+class SizeTest(unittest.TestCase):
+    def test_size_round_trips(self):
+        import tempfile
+        from audiomixer.ui.settings import load_size, save_size
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "window.json")
+            self.assertIsNone(load_size(path))
+            save_size(900, 500, path)
+            self.assertEqual(load_size(path), (900, 500))
+            with open(path, "w") as f:
+                f.write("garbage")
+            self.assertIsNone(load_size(path))
+
+
 if __name__ == "__main__":
     unittest.main()
