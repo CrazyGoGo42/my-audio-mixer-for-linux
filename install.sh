@@ -29,7 +29,7 @@ MIXER_DIR="$HOME/.config/audio-mixer"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 AUTOSTART_DIR="$HOME/.config/autostart"
 EE_APP=com.github.wwmm.easyeffects
-SCRIPTS="audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog audio-mixer-backup audio-mixer"
+SCRIPTS="audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog audio-mixer-backup audio-mixer audio-mixer-window"
 
 RESTORE_DIR=""
 case "$1" in
@@ -73,6 +73,9 @@ if [ "$XDG_CURRENT_DESKTOP" != "ubuntu:GNOME" ] && [ "$XDG_CURRENT_DESKTOP" != "
     SKIP_KEYBINDINGS=1
 fi
 python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null || { warn "Installing GTK3..."; sudo apt install -y python3-gi gir1.2-gtk-3.0; }
+# The mixer window is GTK 4 + libadwaita.
+python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1')" 2>/dev/null \
+    || { warn "Installing GTK4 + libadwaita..."; sudo apt install -y gir1.2-gtk-4.0 gir1.2-adw-1; }
 ok "Python3 + GTK3"
 
 # ---------- Dependencies ----------
@@ -112,7 +115,7 @@ done
 mkdir -p "$LIB_DIR"
 rm -rf "$LIB_DIR/audiomixer"
 cp -r "$SCRIPT_DIR/lib/audiomixer" "$LIB_DIR/audiomixer"
-rm -rf "$LIB_DIR/audiomixer/__pycache__"
+find "$LIB_DIR/audiomixer" -name __pycache__ -prune -exec rm -rf {} +
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
     [ -f "$HOME/.bashrc" ] && echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
     warn "Added ~/.local/bin to PATH in ~/.bashrc — run: source ~/.bashrc"
@@ -319,6 +322,26 @@ PY
     done
 fi
 
+# ---------- Mixer window: app launcher entry + start at login ----------
+# XDG autostart (not systemd): it starts inside the graphical session, so the
+# window always has a display. Single instance — launching again just raises it.
+APPS_DIR="$HOME/.local/share/applications"
+mkdir -p "$APPS_DIR" "$AUTOSTART_DIR"
+cat > "$APPS_DIR/audio-mixer.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Audio Mixer
+Comment=Volume, effects and outputs for every channel; route playing apps
+Exec=$BIN_DIR/audio-mixer-window
+Icon=multimedia-volume-control
+Categories=AudioVideo;Audio;Mixer;
+Keywords=volume;mixer;voicemeeter;audio;
+StartupNotify=true
+EOF
+grep -v '^StartupNotify' "$APPS_DIR/audio-mixer.desktop" > "$AUTOSTART_DIR/audio-mixer-window.desktop"
+printf 'X-GNOME-Autostart-enabled=true\nX-GNOME-Autostart-Delay=5\n' >> "$AUTOSTART_DIR/audio-mixer-window.desktop"
+ok "Mixer window in your app launcher (\"Audio Mixer\") and starting at login"
+
 # ---------- GNOME keybindings ----------
 if [ -z "$SKIP_KEYBINDINGS" ]; then
     info "Setting up keyboard shortcuts..."
@@ -421,5 +444,6 @@ echo "  Commands:  audio-route-apps     move playing apps onto their channel now
 echo "             audio-routes-apply   apply changes to channels.conf / routes.json"
 echo "             audio-mixer-backup   back up now (--restore to put one back)"
 echo "             audio-mixer          FX, outputs A1-A4, Bass/Treble, mic (--help)"
+echo "             audio-mixer-window   the mixer window (also in your app launcher)"
 echo "             pavucontrol          GUI for manual tweaks"
 echo ""

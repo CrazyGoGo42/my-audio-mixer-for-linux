@@ -70,5 +70,33 @@ class ReaderTest(unittest.TestCase):
         self.assertTrue(reader.process is None or reader.process.poll() is not None)
 
 
+    def test_meter_process_dies_with_a_killed_window(self):
+        # A window that's killed (or crashes) can't stop its meters: they must
+        # not live on as orphans reading monitors forever.
+        import signal
+        import subprocess
+        import sys
+        import time
+        lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
+        child = subprocess.Popen([sys.executable, "-c", (
+            f"import sys, time; sys.path.insert(0, {lib!r}); sys.dont_write_bytecode = True\n"
+            "from audiomixer.meters import MeterReader\n"
+            "r = MeterReader(['--device=X.monitor'], lambda level: None); r.start()\n"
+            "time.sleep(1); print(r.process.pid, flush=True); time.sleep(60)")],
+            stdout=subprocess.PIPE, text=True)
+        parec_pid = int(child.stdout.readline())
+        os.kill(child.pid, signal.SIGKILL)
+        child.wait()
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            try:
+                os.kill(parec_pid, 0)
+            except OSError:
+                break
+            time.sleep(0.05)
+        with self.assertRaises(OSError):
+            os.kill(parec_pid, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

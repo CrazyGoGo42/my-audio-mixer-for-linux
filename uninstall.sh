@@ -6,7 +6,7 @@ info() { echo -e "${BLUE}[INFO]${NC}  $1"; }
 ok()   { echo -e "${GREEN}[OK]${NC}    $1"; }
 
 MIXER_DIR="$HOME/.config/audio-mixer"
-SCRIPTS="audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog audio-mixer-backup audio-mixer"
+SCRIPTS="audio-osd audio-channel-control audio-route-apps audio-router-daemon audio-routes-apply easyeffects-watchdog audio-mixer-backup audio-mixer audio-mixer-window"
 UNITS="audio-osd.service audio-router-daemon.service easyeffects-watchdog.service audio-mixer-backup.service audio-mixer-backup.timer"
 
 # Our channel sinks, read now — the channel list may be deleted below.
@@ -28,6 +28,9 @@ systemctl --user daemon-reload 2>/dev/null || true
 # Legacy XDG autostart from older installs
 rm -f "$HOME/.config/autostart/audio-osd.desktop"
 rm -f "$HOME/.config/autostart/audio-router-daemon.desktop"
+# The mixer window, its launcher entry and its login autostart
+pkill -f "$HOME/.local/bin/audio-mixer-window" 2>/dev/null || true
+rm -f "$HOME/.local/share/applications/audio-mixer.desktop" "$HOME/.config/autostart/audio-mixer-window.desktop"
 # Kill any stragglers
 pkill -f "$HOME/.local/bin/audio-router-daemon" 2>/dev/null || true
 pkill -f "$HOME/.local/bin/audio-osd" 2>/dev/null || true

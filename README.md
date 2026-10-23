@@ -10,6 +10,28 @@ streaming.
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%2B-orange)](https://ubuntu.com/)
 [![GNOME](https://img.shields.io/badge/GNOME-required-green)](https://www.gnome.org/)
 
+![The mixer window](docs/images/mixer-window.png)
+
+## The mixer window
+
+**Audio Mixer** in your app launcher (it also starts at login — keep it on a
+second screen, like VoiceMeeter):
+
+- **A strip per channel** plus your **Mic**, the **EasyEffects** output and
+  **All Audio**: volume slider, live level meter, mute.
+- **FX** per channel (through EasyEffects, or dry), **Bass / Treble**, and
+  **A1–A4** buttons for where a dry channel plays; the EasyEffects strip has its
+  own A1–A4.
+- **Outputs** bar: pick which device A1–A4 are ("Default output" follows your
+  headset when you plug it in). The **Mic** title picks your microphone.
+- **Playing now**: every app making sound, its level, and a button per channel —
+  click one to move the app there for good. New apps are marked **NEW** (while
+  the window is open, it asks here instead of popping up a dialog).
+- Hotkeys and the window stay in sync both ways.
+- Make the window narrow and it folds into a compact view for a corner:
+
+<img src="docs/images/mixer-window-compact.png" alt="Compact view" width="280">
+
 ## The Problem
 
 On Windows, VoiceMeeter lets you split audio into virtual cables and control
@@ -47,8 +69,8 @@ contains the Discord channel, so people would hear themselves.
 
 ### Effects, outputs and your mic
 
-Like VoiceMeeter's strips and A1/A2 buttons, controlled with `audio-mixer`
-(the mixer window, coming next, uses the same settings):
+Like VoiceMeeter's strips and A1/A2 buttons — in the mixer window, or from a
+terminal with `audio-mixer` (both use the same settings):
 
 - **FX per channel** — on: the channel goes through your EasyEffects preset;
   off: it plays dry. All on by default, which sounds exactly like before.
@@ -167,6 +189,7 @@ and your backup folder are left alone.
 | `audio-routes-apply`    | Builds the channel sinks + pipewire-pulse routing rules from the two above |
 | `audio-channel-control` | Adjusts per-channel volume/mute (the hotkeys call this)                  |
 | `audio-osd`             | Persistent GTK overlay showing the channel + volume on each keypress     |
+| `audio-mixer-window`    | The mixer window (GTK 4 + libadwaita)                                    |
 | `audio-mixer`           | FX, output slots, Bass/Treble and mic (writes `mixer.json`)              |
 | `audio-router-daemon`   | Prompts for unknown apps; the patchbay that links everything as `mixer.json` says; restores volumes at login. No notifs. |
 | `audio-route-apps`      | One-shot: move currently-playing apps onto their channel                 |
