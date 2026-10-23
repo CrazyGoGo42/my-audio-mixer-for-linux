@@ -253,11 +253,9 @@ class CompactTest(UiTestBase):
     def compact_row(self, name):
         return next(r for r in self.win.compact.strips if r.name == name)
 
-    def test_compact_has_a_row_per_strip_with_its_apps(self):
+    def test_compact_has_a_row_per_strip(self):
+        # Its apps are listed under the rows: tests/test_compact_apps.py.
         self.assertEqual([r.name for r in self.win.compact.strips], [n for n, _ in strip_targets(CHS)])
-        self.assertEqual(self.win.compact.app_labels["Browser_Audio"].get_label(), "Zen")
-        self.assertEqual(self.win.compact.app_labels["Default_Audio"].get_label(), "Audacity")
-        self.assertFalse(self.win.compact.app_labels["Music_Audio"].get_visible())
 
     def test_compact_rows_show_their_titles(self):
         row = self.compact_row("Music_Audio")
@@ -338,6 +336,15 @@ class MeterLifecycleTest(UiTestBase):
         by_args["--monitor-stream=141"].on_level(0.5)
         self.meters._frame()
         zen = next(r for r in self.win.apps.rows if r.app.name == "Zen")
+        self.assertGreater(zen.meter.get_value(), 0.8)
+
+    def test_compact_app_rows_show_levels_while_compact(self):
+        self.win.set_layout("compact")
+        self.meters.start()
+        by_args = {r.args[0]: r for r in self.readers}
+        by_args["--monitor-stream=141"].on_level(0.5)
+        self.meters._frame()
+        zen = next(r for r in self.win.compact.apps.rows if r.app.name == "Zen")
         self.assertGreater(zen.meter.get_value(), 0.8)
 
     def test_meters_use_a_decibel_scale(self):

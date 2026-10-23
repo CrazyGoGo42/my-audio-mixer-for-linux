@@ -177,6 +177,11 @@ class MixerWindow(Adw.ApplicationWindow):
             if strip.name in labels:
                 strip.set_title(labels[strip.name])
         self.apps.retitle(self.controller.channels)
+        self.compact.apps.retitle(self.controller.channels)
+
+    def app_rows(self):
+        """The "Playing now" rows on screen (each layout has its own list)."""
+        return (self.compact.apps if self.layout == "compact" else self.apps).rows
 
     def show_renamed(self, old, new):
         self.show_toast(f"{old} is now {new}. Other apps see it after an engine restart.",

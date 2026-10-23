@@ -94,6 +94,6 @@ class Meters:
         for strip in self.window.strips + getattr(self.window, "compact_strips", []):
             strip.set_level(meter_fraction(strip_level(levels.get(strip.name, 0.0),
                                                        snapshot.strips.get(strip.name))))
-        for row in self.window.apps.rows:
+        for row in self.window.app_rows():
             loudest = max((levels.get(("app", row.app.key, i), 0.0) for i in row.app.indexes), default=0.0)
             row.set_level(meter_fraction(loudest))
