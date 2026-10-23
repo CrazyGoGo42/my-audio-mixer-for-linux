@@ -27,7 +27,9 @@ second screen, like VoiceMeeter):
 - **Playing now**: every app making sound, its level, and a button per channel —
   click one to move the app there for good. New apps are marked **NEW** (while
   the window is open, it asks here instead of popping up a dialog).
-- Hotkeys and the window stay in sync both ways.
+- Hotkeys and the window stay in sync both ways. **Right-click** any mute
+  button, fader or A1–A4 button to see or change its hotkey (press the new
+  combination; Esc cancels).
 - Make the window narrow and it folds into a compact view for a corner:
 
 <img src="docs/images/mixer-window-compact.png" alt="Compact view" width="280">
@@ -57,6 +59,20 @@ the fact, so:
 
 Each keypress shows a minimal OSD overlay on your primary monitor that follows
 your GNOME light/dark theme.
+
+These are the defaults. Every strip — Mic, the four channels, EasyEffects and
+All Audio — can have mute / volume-down / volume-up hotkeys, and the channels and
+EasyEffects can have one per output (A1–A4). Set them by right-clicking in the
+mixer window, or:
+
+```bash
+audio-mixer hotkeys list                       # every action and its keys
+audio-mixer hotkeys set mic:mute "<Ctrl><Alt>m"
+audio-mixer hotkeys clear mic:mute
+```
+
+They're kept in `~/.config/audio-mixer/hotkeys.json` (backed up daily). Changing
+the mic's level never unmutes it, and a muted mic stays muted across reboots.
 
 ### All Audio (the all-in-one channel)
 
@@ -213,9 +229,10 @@ and your backup folder are left alone.
 
 ## Customization
 
-- **Channels** — add, remove or rename channels and their hotkeys in
+- **Channels** — add, remove or rename channels in
   `~/.config/audio-mixer/channels.conf`, then run `audio-routes-apply` (restarts
-  PipeWire) and rerun `./install.sh` to rebind the hotkeys.
+  PipeWire). Its numpad columns only seed the hotkeys on a first install; after
+  that, hotkeys live in `hotkeys.json` (see above).
 - **Volume step** — edit `STEP` in `~/.local/bin/audio-channel-control` (default `1`).
 - **OSD position** — edit `TOP_MARGIN` in `~/.local/bin/audio-osd`.
 - **Routing** — edit `~/.config/audio-mixer/routes.json`, then run `audio-routes-apply`.
