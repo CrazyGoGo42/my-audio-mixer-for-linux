@@ -10,7 +10,8 @@ from ..config import MIXER_DIR
 WINDOW_FILE = os.path.join(MIXER_DIR, "window.json")
 
 
-def load_size(path=WINDOW_FILE):
+def load_size(path=None):
+    path = path or WINDOW_FILE
     try:
         with open(path) as f:
             data = json.load(f)
@@ -20,7 +21,8 @@ def load_size(path=WINDOW_FILE):
     return (width, height) if width > 100 and height > 100 else None
 
 
-def save_size(width, height, path=WINDOW_FILE):
+def save_size(width, height, path=None):
+    path = path or WINDOW_FILE
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:

@@ -38,7 +38,9 @@ import sys
 import threading
 import time
 
-CHAIN_POLL_SECONDS = 3
+# A safety net: real changes (devices, EasyEffects restarting, apps) trigger a
+# pass at once through `pactl subscribe`, so a slow poll is enough.
+CHAIN_POLL_SECONDS = 10
 
 # The shared audiomixer package: lib/ next to bin/ in the repo, or installed.
 for _lib in (os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"),
@@ -221,6 +223,17 @@ eq_seen = None
 patch_lock = threading.Lock()
 
 
+def event_rewires(line):
+    """Does this `pactl subscribe` line call for a patchbay pass? A device,
+    EasyEffects or one of our nodes coming or going, or the default output
+    changing ("Default output" slots follow it). Not clients (every pactl run),
+    meters (source-outputs) or plain volume changes."""
+    if " on server" in line:
+        return "'change'" in line
+    is_device = " on sink " in line + " " or " on source " in line + " "
+    return is_device and ("'new'" in line or "'remove'" in line)
+
+
 def tick(graph=None):
     """One daemon pass: volumes first, then links. Nodes that were just
     (re)created come up at 100%, so their saved levels must be back before
@@ -265,20 +278,22 @@ def volume_targets(channels):
 VOLUME_TARGETS = volume_targets(CHANNEL_LIST)
 
 
-def volume_raw(name, kind):
-    """Current raw PA volume (65536 == 100%), or None if the node is absent."""
-    m = re.search(r":\s*(\d+)\s*/", run(["pactl", f"get-{kind}-volume", name]))
-    return int(m.group(1)) if m else None
-
-
 def snapshot_volumes():
-    """{node: raw_volume} for every volume target currently present."""
-    vols = {}
-    for name, kind in VOLUME_TARGETS:
-        v = volume_raw(name, kind)
-        if v is not None:
-            vols[name] = v
-    return vols
+    """{node: raw_volume} for every volume target currently present — one
+    `pactl -f json list` per kind instead of one pactl per node."""
+    kinds = {kind for _, kind in VOLUME_TARGETS}
+    raw = {}
+    for kind in kinds:
+        try:
+            entries = json.loads(run(["pactl", "-f", "json", "list", kind + "s"]) or "[]")
+        except ValueError:
+            entries = []
+        for e in entries if isinstance(entries, list) else []:
+            try:
+                raw[(e["name"], kind)] = int(next(iter(e["volume"].values()))["value"])
+            except (KeyError, TypeError, ValueError, StopIteration):
+                pass
+    return {name: raw[(name, kind)] for name, kind in VOLUME_TARGETS if (name, kind) in raw}
 
 
 def save_volumes():
@@ -432,16 +447,12 @@ def main():
         proc = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True)
         for line in proc.stdout:
-            if "'new'" not in line and "'remove'" not in line:
-                continue
-            if "sink-input" in line:
-                if "'new'" in line:
-                    time.sleep(0.3)  # let props populate; stream is already safe on Default
-                    routes = apps.load_routes()
-                    for stream in list_streams():
-                        consider(stream, routes)
-            elif "source-output" not in line and ("sink" in line or "source" in line):
-                # A device, EasyEffects or one of our nodes came or went: rewire.
+            if "'new'" in line and " on sink-input" in line:
+                time.sleep(0.3)  # let props populate; stream is already safe on Default
+                routes = apps.load_routes()
+                for stream in list_streams():
+                    consider(stream, routes)
+            elif event_rewires(line):
                 time.sleep(0.5)
                 tick()
 

@@ -45,6 +45,16 @@ class DaemonHelpersTest(unittest.TestCase):
         self.assertFalse(self.d.should_prompt(window_is_running=True))
         self.assertTrue(self.d.should_prompt(window_is_running=False))
 
+    def test_which_events_trigger_a_patchbay_pass(self):
+        rewire = self.d.event_rewires
+        self.assertTrue(rewire("Event 'new' on sink #400"))            # device / EasyEffects back
+        self.assertTrue(rewire("Event 'remove' on source #401"))
+        self.assertTrue(rewire("Event 'change' on server #-1"))        # default output changed
+        self.assertFalse(rewire("Event 'new' on client #9"))           # every pactl run
+        self.assertFalse(rewire("Event 'new' on source-output #9"))    # meters
+        self.assertFalse(rewire("Event 'change' on sink #53"))         # just a volume
+        self.assertFalse(rewire("Event 'new' on sink-input #77"))      # an app (prompted separately)
+
     def test_volume_targets_cover_channels_and_the_new_strips(self):
         self.assertEqual(self.d.volume_targets(CHS), [
             ("Default_Audio", "sink"), ("Music_Audio", "sink"), ("EE_Return", "sink"),
@@ -84,9 +94,15 @@ class VolumeTickTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.log = os.path.join(self.tmp.name, "calls")
         fake = os.path.join(self.tmp.name, "pactl")
-        with open(fake, "w") as f:  # every node reports a fresh 100%
-            f.write(f'#!/bin/sh\necho "$*" >> {self.log}\n'
-                    'case "$1" in get-*) echo "Volume: front-left: 65536 / 100% / 0.00 dB";; esac\n')
+        # Every node reports a fresh 100%, answering only the cheap JSON lists
+        # (one call per kind instead of one per node).
+        listing = json.dumps([{"name": n, "volume": {"front-left": {"value": 65536, "value_percent": "100%"}}}
+                              for n in ("Default_Audio", "Music_Audio", "EE_Return", "Mic_In", "All_Audio")])
+        with open(os.path.join(self.tmp.name, "listing.json"), "w") as f:
+            f.write(listing)
+        with open(fake, "w") as f:
+            f.write(f'#!/bin/sh\ncase "$*" in "-f json list "*) cat {self.tmp.name}/listing.json; exit 0;; esac\n'
+                    f'echo "$*" >> {self.log}\n')
         os.chmod(fake, os.stat(fake).st_mode | stat.S_IEXEC)
         old = os.environ["PATH"]
         os.environ["PATH"] = self.tmp.name + os.pathsep + old
@@ -141,6 +157,12 @@ class VolumeTickTest(unittest.TestCase):
         self.d.volume_tick(self.graph(shift=3))     # same names, new node ids
         self.assertIn("set-sink-volume Default_Audio 22937", self.calls())
         self.assertEqual(self.saved(), self.SAVED)
+
+    def test_saving_reads_all_volumes_in_two_pactl_calls(self):
+        for _ in range(3):
+            self.d.volume_tick(self.graph())
+        self.assertEqual(self.saved(), {n: 65536 for n in self.SAVED})
+        self.assertEqual([c for c in self.calls() if "get-" in c], [])  # no per-node calls
 
     def test_present_targets_are_restored_but_nothing_saved_until_all_exist(self):
         g = self.graph()

@@ -42,7 +42,9 @@ class Meters:
         window.controller.subscribe(self)
 
     def _want(self):
-        want = {s.name: meter_args(s.name, s.kind) for s in self.window.strips}
+        live = self.window.controller.snapshot.strips
+        want = {s.name: meter_args(s.name, s.kind) for s in self.window.strips
+                if live.get(s.name) and live[s.name].present}
         for app in self.window.controller.snapshot.apps:
             for index in app.indexes:  # every stream: often only one of them is playing
                 want[("app", app.key, index)] = [f"--monitor-stream={index}"]
@@ -73,7 +75,8 @@ class Meters:
     def _sync(self):
         want = self._want()
         for key in list(self.readers):
-            if key not in want or self.readers[key].args != want[key]:
+            dead = not self.readers[key].is_alive()  # parec ended: PipeWire restarted
+            if dead or key not in want or self.readers[key].args != want[key]:
                 self.readers.pop(key).stop()
                 self.levels.pop(key, None)
         for key, args in want.items():

@@ -16,8 +16,25 @@ import time
 from gi.repository import GLib
 
 from .. import apps, commands, easyeffects, live
-from ..config import STATE_FILE, load_state
+from ..config import STATE_FILE, load_state, update_state
+from ..meters import die_with_parent
 from ..pwgraph import read_graph
+
+
+def event_needs(line):
+    """What a `pactl subscribe` line requires: None, "snapshot" (volumes, mutes,
+    apps) or "status" (devices / default output changed: re-read the routing).
+
+    Client and source-output events are ignored: every pactl run (ours, the
+    daemon's) is a client and every meter is a source-output, so reacting to
+    them made the window refresh itself in a loop."""
+    if " on sink-input" in line:
+        return "snapshot"
+    if " on server" in line or " on card" in line:
+        return "status"
+    if " on sink " in line + " " or " on source " in line + " ":
+        return "status" if ("'new'" in line or "'remove'" in line) else "snapshot"
+    return None
 
 
 def read_status(channels):
@@ -39,7 +56,7 @@ def _run(argv):
 
 class Controller:
     def __init__(self, channels, read_snapshot=None, read_status=None, run=None, run_command=None,
-                 remember=None, route_now=None):
+                 remember=None, route_now=None, update_state=None):
         self.channels = channels
         self._read_snapshot = read_snapshot or live.read_snapshot
         self._read_status = read_status or globals()["read_status"]
@@ -47,6 +64,7 @@ class Controller:
         self._run_command = run_command or commands.run
         self._remember = remember or apps.remember
         self._route_now = route_now or apps.route_now
+        self._update_state = update_state or (lambda change: globals()["update_state"](self.channels, change))
         self.snapshot = live.Snapshot()
         self.status = None
         self.views = []
@@ -74,9 +92,25 @@ class Controller:
             view.update(self.snapshot, self.status)
 
     # ---------------------------------------------------------------- writes
-    def set_volume(self, name, kind, pct):
+    def set_volume(self, name, kind, pct, unmute=True):
         self._run(["pactl", f"set-{kind}-volume", name, f"{int(round(pct))}%"])
-        self._run(["pactl", f"set-{kind}-mute", name, "0"])
+        if unmute:
+            self._run(["pactl", f"set-{kind}-mute", name, "0"])
+
+    def set_eq(self, key, band, value):
+        """Bass/Treble while dragging: save it and set just this channel's
+        filter (one pw-cli) — no rewiring pass, no pw-dump."""
+        try:
+            state = self._update_state(
+                lambda current: commands.apply_command(["eq", key, band, str(value)], self.channels, current))
+        except (ValueError, OSError):
+            return
+        channel = next(c for c in self.channels if c.key == key)
+        live = self.snapshot.strips.get(channel.sink)
+        cs = state.channels[key]
+        if live and live.node_id is not None:
+            self._run(["pw-cli", "set-param", str(live.node_id), "Props",
+                       f'{{ params = [ "bass:Gain" {float(cs.bass)} "treble:Gain" {float(cs.treble)} ] }}'])
 
     def toggle_mute(self, name, kind):
         self._run(["pactl", f"set-{kind}-mute", name, "toggle"])
@@ -89,6 +123,11 @@ class Controller:
         except ValueError:
             pass
         self.refresh(status_too=True)
+
+    def confirm_app(self, row):
+        """A NEW app is fine where it is: remember that, move nothing."""
+        self._remember(row.props, row.sink)
+        self.refresh()
 
     def move_app(self, row, sink):
         """Put an app on a channel: remember it first (so it's born there next
@@ -114,11 +153,16 @@ class Controller:
         while not self._stopping:
             try:
                 self._sub = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE,
-                                             stderr=subprocess.DEVNULL, text=True)
+                                             stderr=subprocess.DEVNULL, text=True,
+                                             preexec_fn=die_with_parent)
             except OSError:
                 return
+            # (Re)connected — e.g. after a PipeWire restart: catch up on everything.
+            GLib.idle_add(self.schedule_refresh, True)
             for line in self._sub.stdout:
-                GLib.idle_add(self.schedule_refresh, "'new'" in line or "'remove'" in line)
+                need = event_needs(line)
+                if need:
+                    GLib.idle_add(self.schedule_refresh, need == "status")
             self._sub.wait()
             time.sleep(1)  # pulse restarted: reconnect
 

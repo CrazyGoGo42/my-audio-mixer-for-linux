@@ -61,6 +61,53 @@ class ReaderTest(unittest.TestCase):
         with self.assertRaises(OSError):
             os.kill(pid, 0)
 
+    def test_idle_meter_process_dies_with_a_killed_window(self):
+        # Seen live: a meter whose stream had vanished never wrote, so no broken
+        # pipe ever killed it — it outlived its window at 16% CPU.
+        import signal
+        import subprocess
+        import sys
+        import time
+        fake = os.path.join(self.dir.name, "parec")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\nexec sleep 60\n")
+        lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
+        child = subprocess.Popen([sys.executable, "-c", (
+            f"import sys, time; sys.path.insert(0, {lib!r}); sys.dont_write_bytecode = True\n"
+            "from audiomixer.meters import MeterReader\n"
+            "r = MeterReader(['--device=X.monitor'], lambda level: None); r.start()\n"
+            "time.sleep(1); print(r.process.pid, flush=True); time.sleep(60)")],
+            stdout=subprocess.PIPE, text=True)
+        parec_pid = int(child.stdout.readline())
+        os.kill(child.pid, signal.SIGKILL)
+        child.wait()
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            try:
+                os.kill(parec_pid, 0)
+            except OSError:
+                break
+            time.sleep(0.05)
+        alive = True
+        try:
+            os.kill(parec_pid, 0)
+        except OSError:
+            alive = False
+        if alive:
+            os.kill(parec_pid, signal.SIGKILL)
+        self.assertFalse(alive, "meter outlived its window")
+
+    def test_reader_reports_silence_when_parec_exits(self):
+        # A meter whose parec died (pulse restarted) must drop to 0, not freeze.
+        fake = os.path.join(self.dir.name, "parec")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\nprintf '\\000\\100\\000\\100'\n")
+        levels = []
+        reader = MeterReader(["--device=X.monitor"], levels.append)
+        reader.start()
+        reader.join(3)
+        self.assertEqual(levels[-1], 0.0)
+
     def test_stop_before_start_leaves_nothing_running(self):
         reader = MeterReader(["--device=X.monitor"], lambda level: None)
         reader.stop()

@@ -4,6 +4,15 @@ import time
 
 from gi.repository import GLib, Gtk
 
+def guard_wheel(scale, owner):
+    """A mouse wheel over an unfocused fader scrolls the window instead of
+    changing a level (scrolling the list must never move, or unmute, anything)."""
+    wheel = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.BOTH_AXES)
+    wheel.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+    wheel.connect("scroll", lambda c, dx, dy: owner.on_scroll(c, dx, dy, scale))
+    scale.add_controller(wheel)
+
+
 # After the user touches a slider, live refreshes leave it alone this long, so
 # the echo of their own (or an older) value can't yank it back mid-drag.
 TOUCH_HOLD = 0.6
@@ -34,6 +43,9 @@ class StripWidget(Gtk.Box):
             Gtk.Orientation.HORIZONTAL if compact else Gtk.Orientation.VERTICAL, 0, 100, 1)
         self.scale.set_draw_value(False)
         self.scale.connect("value-changed", self._on_value_changed)
+        guard_wheel(self.scale, self)
+        # A Mic level change never unmutes it (a muted mic must not go live by itself).
+        self.unmute_on_change = name != "Mic_In"
         self.meter = Gtk.LevelBar()
         self.meter.set_min_value(0)
         self.meter.set_max_value(1)
@@ -138,7 +150,17 @@ class StripWidget(Gtk.Box):
             self._write_id = None
         if self._pending is not None:
             value, self._pending = self._pending, None
-            self.controller.set_volume(self.name, self.kind, value)
+            self.controller.set_volume(self.name, self.kind, value, unmute=self.unmute_on_change)
+
+    def on_scroll(self, _controller, _dx, dy, scale=None):
+        scale = scale or self.scale
+        if scale.has_focus():
+            return False  # the user clicked it first: the wheel adjusts it
+        scrolled = self.get_ancestor(Gtk.ScrolledWindow)
+        if scrolled is not None:
+            adj = scrolled.get_vadjustment()
+            adj.set_value(adj.get_value() + dy * 40)
+        return True
 
     def _on_mute_toggled(self, button):
         if not self._updating:
@@ -257,6 +279,7 @@ class ChannelStrip(StripWidget):
         scale.add_mark(0, Gtk.PositionType.BOTTOM, None)
         scale.set_tooltip_text(f"{label}: 0 dB")
         scale.connect("value-changed", self._on_eq, label.lower())
+        guard_wheel(scale, self)
         row.append(name)
         row.append(scale)
         self.top.append(row)
@@ -305,7 +328,7 @@ class ChannelStrip(StripWidget):
             self._eq_id = None
         pending, self._eq_pending = self._eq_pending, {}
         for band, value in pending.items():
-            self.controller.command(["eq", self.key, band, str(float(value))])
+            self.controller.set_eq(self.key, band, float(value))
 
 
 class EasyEffectsStrip(StripWidget):

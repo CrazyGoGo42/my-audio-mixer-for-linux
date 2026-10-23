@@ -1,6 +1,6 @@
 """
 Level meters for the mixer window: one low-rate `parec` per meter, reporting
-the peak of each 25 ms chunk.
+the peak of each 50 ms chunk.
 
 A sink's monitor carries the signal *before* the sink's own volume, so a
 strip meter shows `peak × (volume%/100)³` — what you actually hear from it.
@@ -8,11 +8,28 @@ Sources (Mic_In, All_Audio) are metered directly.
 """
 
 import array
+import ctypes
+import signal
 import subprocess
 import threading
 
+try:
+    _libc = ctypes.CDLL("libc.so.6", use_errno=True)
+except OSError:
+    _libc = None
+_PR_SET_PDEATHSIG = 1
+
+
+def die_with_parent():
+    """Run in a child before exec: the kernel kills it the moment the process
+    (thread) that started it dies — a crashed or killed window can't leave
+    meters or listeners running, even ones that never write anything."""
+    if _libc is not None:
+        _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL)
+
+
 RATE = 8000
-CHUNK = 800  # bytes: 200 stereo s16 frames = 25 ms at 8 kHz
+CHUNK = 1600  # bytes: 400 stereo s16 frames = 50 ms at 8 kHz (20 wakeups/s per meter)
 
 
 def peak(chunk):
@@ -51,7 +68,7 @@ class MeterReader(threading.Thread):
                 self.process = subprocess.Popen(
                     ["parec", "--raw", "--format=s16le", f"--rate={RATE}", "--channels=2",
                      "--latency-msec=50", *self.args],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, preexec_fn=die_with_parent)
             except OSError:
                 return
         while not self._stopping:
@@ -60,6 +77,10 @@ class MeterReader(threading.Thread):
                 break
             if not self._stopping:
                 self.on_level(peak(data))
+        self.process.stdout.close()
+        self.process.wait()  # reap it: no <defunct> leftovers
+        if not self._stopping:
+            self.on_level(0.0)  # parec ended (e.g. PipeWire restarted): show silence, don't freeze
 
     def stop(self):
         with self._lock:

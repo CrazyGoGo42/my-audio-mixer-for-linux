@@ -1,6 +1,6 @@
 """The mixer window: Mic | channels | EasyEffects | All Audio."""
 
-from gi.repository import Adw, Gdk, Gtk
+from gi.repository import Adw, Gdk, GLib, Gtk
 
 from ..config import ALL_AUDIO, EE_RETURN, MIC_IN
 from ..live import strip_targets
@@ -108,6 +108,25 @@ class MixerWindow(Adw.ApplicationWindow):
         toolbar.set_content(self.stack)
         self.set_content(toolbar)
         controller.subscribe(self)
+        # Remember the size whenever it changes: an always-open window usually
+        # ends at logout, where close-request never fires.
+        self._size_save_id = None
+        self.connect("notify::default-width", self._size_changed)
+        self.connect("notify::default-height", self._size_changed)
+
+    def _size_changed(self, *_):
+        if self._size_save_id is None:
+            self._size_save_id = GLib.timeout_add(1000, self._size_timeout)
+
+    def _size_timeout(self):
+        self._size_save_id = None
+        self.save_size_now()
+        return False
+
+    def save_size_now(self):
+        width, height = self.get_default_size()
+        if not self.is_maximized() and width > 100 and height > 100:
+            save_size(width, height)
 
     def update(self, snapshot, status):
         for strip in self.strips:
@@ -127,8 +146,10 @@ class MixerWindow(Adw.ApplicationWindow):
                 text = "off"
             elif value == "@default":
                 text = "Default output" + (f" ({names.get(device, device)})" if device else "")
+            elif device:
+                text = names.get(value, value)
             else:
-                text = names.get(value, value) + ("" if device else " (not connected)")
+                text = "not connected · " + names.get(value, value)
             button.set_label(f"{slot} · {text}")
             run = self.controller.command
             button.set_items([("Default output", lambda s=slot: run(["slot", s, "default"]))]
@@ -151,7 +172,7 @@ def follow_visibility(window, meters):
         meters.start()
 
     def on_close(_w):
-        save_size(window.get_width(), window.get_height())
+        window.save_size_now()
         meters.stop()
         return False
 

@@ -20,6 +20,7 @@ class StripLive:
     present: bool
     volume: int      # pactl % (0–150)
     muted: bool
+    node_id: int | None = None  # PipeWire object id (Bass/Treble controls live on it)
 
 
 @dataclass
@@ -52,12 +53,19 @@ def _percent(entry):
         return 0
 
 
+def _object_id(entry):
+    try:
+        return int((entry.get("properties") or {}).get("object.id"))
+    except (TypeError, ValueError):
+        return None
+
+
 def build_snapshot(sinks, sources, inputs, channels, routes):
     by_name = {e.get("name"): e for e in list(sinks) + list(sources)}
     strips = {}
     for name, kind in strip_targets(channels):
         e = by_name.get(name)
-        strips[name] = (StripLive(name, kind, True, _percent(e), bool(e.get("mute")))
+        strips[name] = (StripLive(name, kind, True, _percent(e), bool(e.get("mute")), _object_id(e))
                         if e else StripLive(name, kind, False, 0, False))
 
     sink_names = {e.get("index"): e.get("name") for e in sinks}

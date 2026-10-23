@@ -157,12 +157,6 @@ class RoutingControlsTest(UiTestBase):
         ee.slot_toggles[1].set_active(True)
         self.assertEqual(self.commands, [["out", "fx", "A2", "on"]])
 
-    def test_eq_change_runs_eq_command(self):
-        music = self.strip("Music_Audio")
-        music.bass.set_value(6)
-        music.flush_eq()
-        self.assertEqual(self.commands, [["eq", "music", "bass", "6.0"]])
-
     def test_slot_menu_lists_default_devices_and_none(self):
         a2 = self.win.slot_buttons["A2"]
         self.assertTrue(a2.get_label().startswith("A2"))
@@ -280,6 +274,9 @@ class MeterLifecycleTest(UiTestBase):
 
             def stop(self):
                 self.stopped = True
+
+            def is_alive(self):
+                return not self.stopped
         self.meters = Meters(self.win, reader=FakeReader)
 
     def running(self):
@@ -348,3 +345,135 @@ class SizeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventFilterTest(unittest.TestCase):
+    """Seen live: the window's own pactl calls are pulse *clients*; reacting to
+    client events re-ran pactl ~23 times a second forever (54% CPU)."""
+
+    def test_what_each_event_refreshes(self):
+        from audiomixer.ui.controller import event_needs
+        cases = {
+            "Event 'new' on client #8812": None,
+            "Event 'remove' on client #8812": None,
+            "Event 'new' on source-output #9001": None,      # our own meters
+            "Event 'remove' on source-output #9001": None,
+            "Event 'change' on module #12": None,
+            "Event 'change' on sink #53": "snapshot",         # volume / mute
+            "Event 'change' on source #59": "snapshot",
+            "Event 'new' on sink-input #10030": "snapshot",   # an app started
+            "Event 'remove' on sink-input #10030": "snapshot",
+            "Event 'change' on sink-input #10030": "snapshot",
+            "Event 'new' on sink #400": "status",             # a device appeared
+            "Event 'remove' on source #401": "status",
+            "Event 'change' on server #-1": "status",          # default output changed
+            "Event 'change' on card #66": "status",            # profile / plug
+        }
+        for line, want in cases.items():
+            self.assertEqual(event_needs(line), want, line)
+
+
+class ReviewFixesTest(UiTestBase):
+    def setUp(self):
+        super().setUp()
+        self.saved_states = []
+
+    def row(self, name):
+        return next(r for r in self.win.apps.rows if r.app.name == name)
+
+    def test_confirming_a_new_app_on_its_current_channel_remembers_it(self):
+        # Review: a NEW game on Desktop could never be confirmed (clicking the
+        # already-active button was a no-op), so it stayed NEW forever.
+        audacity = self.row("Audacity")             # NEW, playing on Desktop
+        audacity.channel_toggles[0].set_active(False)  # the user clicks "Desktop"
+        self.assertEqual(self.moves, [("remember", "audacity", "Default_Audio")])
+        self.assertTrue(audacity.channel_toggles[0].get_active())
+
+    def test_wheel_over_a_fader_scrolls_instead_of_changing_volume(self):
+        music = self.strip("Music_Audio")
+        self.assertTrue(music.on_scroll(None, 0, 1))   # consumed, not passed to the fader
+        self.assertEqual(music.scale.get_value(), 25)
+        self.assertEqual(self.calls, [])
+
+    def test_changing_the_mic_level_never_unmutes_it(self):
+        mic = self.strip("Mic_In")
+        mic.scale.set_value(60)
+        mic.flush()
+        self.assertEqual(self.calls, [["pactl", "set-source-volume", "Mic_In", "60%"]])
+
+    def test_unplugged_slot_says_so_first(self):
+        self.assertTrue(self.win.slot_buttons["A2"].get_label().startswith("A2 · not connected"))
+
+    def test_eq_drag_touches_only_that_channel(self):
+        # Lightweight: no full command (pw-dump, rewiring, all channels) per drag step.
+        self.snap.strips["Music_Audio"].node_id = 50
+        def fake_update(change):
+            state = change(self.state_for_eq())
+            self.saved_states.append(state)
+            return state
+        self.controller._update_state = fake_update
+        music = self.strip("Music_Audio")
+        music.bass.set_value(6)
+        music.flush_eq()
+        self.assertEqual(self.commands, [])
+        self.assertEqual(self.calls, [["pw-cli", "set-param", "50", "Props",
+                                       '{ params = [ "bass:Gain" 6.0 "treble:Gain" 0.0 ] }']])
+        self.assertEqual(self.saved_states[0].channels["music"].bass, 6.0)
+
+    def state_for_eq(self):
+        from audiomixer.config import ChannelState, MixerState
+        return MixerState({"A1": "@default", "A2": None, "A3": None, "A4": None},
+                          {c.key: ChannelState() for c in CHS}, ["A1"], "@auto")
+
+    def test_size_is_saved_when_resized_not_only_on_close(self):
+        import tempfile
+        from audiomixer.ui import settings
+        with tempfile.TemporaryDirectory() as tmp:
+            old = settings.WINDOW_FILE
+            settings.WINDOW_FILE = os.path.join(tmp, "window.json")
+            try:
+                self.win.set_default_size(800, 600)
+                self.win.save_size_now()
+                self.assertEqual(settings.load_size(), (800, 600))
+            finally:
+                settings.WINDOW_FILE = old
+
+
+class MeterRecoveryTest(UiTestBase):
+    def setUp(self):
+        super().setUp()
+        from audiomixer.ui.levels import Meters
+        test = self
+        self.readers = []
+
+        class FakeReader:
+            def __init__(self, args, on_level):
+                self.args, self.on_level, self.stopped, self.alive = args, on_level, False, True
+                test.readers.append(self)
+
+            def start(self):
+                pass
+
+            def stop(self):
+                self.stopped = True
+
+            def is_alive(self):
+                return self.alive and not self.stopped
+        self.meters = Meters(self.win, reader=FakeReader)
+
+    def running(self, arg):
+        return [r for r in self.readers if r.args[0] == arg and r.is_alive()]
+
+    def test_dead_meters_restart_after_pipewire_comes_back(self):
+        self.meters.start()
+        old = self.running("--device=Music_Audio.monitor")[0]
+        old.alive = False                      # parec exited: pulse restarted
+        self.controller.refresh()              # the reconnect refresh
+        self.assertEqual(len(self.running("--device=Music_Audio.monitor")), 1)
+        self.assertIsNot(self.running("--device=Music_Audio.monitor")[0], old)
+
+    def test_no_meter_for_a_missing_strip(self):
+        self.snap = snapshot(Browser_Audio=(None, False))
+        self.controller.refresh()
+        self.meters.start()
+        self.assertEqual(self.running("--device=Browser_Audio.monitor"), [])

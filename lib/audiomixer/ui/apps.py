@@ -56,7 +56,9 @@ class AppRowWidget(Gtk.Box):
     def _on_toggled(self, toggle, sink):
         if self._updating:
             return
-        if not toggle.get_active():  # un-pressing the current channel changes nothing
+        if not toggle.get_active():  # the user clicked the channel it's already on
+            if not self.app.known:
+                self.controller.confirm_app(self.app)   # NEW app: "yes, here" — remember it
             self.update(self.app)
             return
         self.controller.move_app(self.app, sink)
