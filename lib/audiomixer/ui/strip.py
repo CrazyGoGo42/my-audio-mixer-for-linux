@@ -4,6 +4,9 @@ import time
 
 from gi.repository import GLib, Gtk
 
+from .knob import Knob
+
+
 def guard_wheel(scale, owner):
     """A mouse wheel over an unfocused fader scrolls the window instead of
     changing a level (scrolling the list must never move, or unmute, anything)."""
@@ -68,7 +71,8 @@ class StripWidget(Gtk.Box):
 
     def _build_wide(self):
         self.add_css_class("card")
-        self.set_size_request(118, -1)
+        self.add_css_class("strip")  # its width per layout step: style.py
+        self.set_hexpand(True)        # a wide window: the strips share the room
         self.heading.set_margin_top(10)
         self.header.append(self.heading)
         self.append(self.header)
@@ -79,7 +83,7 @@ class StripWidget(Gtk.Box):
         fader.set_halign(Gtk.Align.CENTER)
         fader.set_vexpand(True)
         self.scale.set_inverted(True)
-        self.scale.set_size_request(-1, 170)
+        self.scale.set_size_request(-1, 80)  # grows with the window
         self.scale.set_vexpand(True)
         self.meter.set_orientation(Gtk.Orientation.VERTICAL)
         self.meter.set_inverted(True)
@@ -95,6 +99,7 @@ class StripWidget(Gtk.Box):
         self.append(self.bottom)
 
     def _build_compact(self):
+        self.add_css_class("compact-row")
         self.heading.set_xalign(0)
         self.heading.set_width_chars(10)
         self.append(self.heading)
@@ -264,6 +269,7 @@ class _SlotToggles(Gtk.Box):
     def __init__(self, on_toggle):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
         self.add_css_class("linked")
+        self.add_css_class("slots")
         self.toggles = []
         self._updating = False
         for slot in SLOTS:
@@ -295,8 +301,11 @@ class ChannelStrip(StripWidget):
         self.fx.set_tooltip_text("On: through EasyEffects. Off: plays dry on its own outputs.")
         self.fx.connect("toggled", self._on_fx)
         self.top.append(self.fx)
-        self.bass = self._eq_scale("Bass")
-        self.treble = self._eq_scale("Treble")
+        knobs = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4, homogeneous=True)
+        knobs.set_halign(Gtk.Align.CENTER)
+        self.bass = self._knob(knobs, "Bass")
+        self.treble = self._knob(knobs, "Treble")
+        self.top.append(knobs)
 
         self.where = Gtk.Stack()
         fx_label = Gtk.Label(label="→ EasyEffects")
@@ -310,23 +319,18 @@ class ChannelStrip(StripWidget):
         self.where.add_named(self.slots, "slots")
         self.bottom.append(self.where)
 
-    def _eq_scale(self, label):
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+    def _knob(self, row, label):
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        knob = Knob(-12, 12, 0.5)
+        knob.set_tooltip_text(f"{label}: 0 dB")
+        knob.connect("value-changed", self._on_eq, label.lower())
         name = Gtk.Label(label=label)
         name.add_css_class("caption")
-        name.set_width_chars(6)
-        name.set_xalign(0)
-        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -12, 12, 0.5)
-        scale.set_draw_value(False)
-        scale.set_hexpand(True)
-        scale.add_mark(0, Gtk.PositionType.BOTTOM, None)
-        scale.set_tooltip_text(f"{label}: 0 dB")
-        scale.connect("value-changed", self._on_eq, label.lower())
-        guard_wheel(scale, self)
-        row.append(name)
-        row.append(scale)
-        self.top.append(row)
-        return scale
+        name.add_css_class("dim-label")
+        column.append(knob)
+        column.append(name)
+        row.append(column)
+        return knob
 
     def update(self, live, status=None):
         super().update(live, status)

@@ -54,11 +54,31 @@ def _run(argv):
         pass
 
 
+def _spawn(argv, done=None):
+    """Run a tool without waiting for it (restarts take seconds); done(code,
+    stderr) is called on the main loop when it ends. Its own session, so
+    closing the window doesn't cut a restart short."""
+    def finish(code, err):
+        if done:
+            GLib.idle_add(lambda: done(code, err) and False)
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True)
+    except OSError as e:
+        finish(127, str(e))
+        return
+
+    def wait():
+        _, err = proc.communicate()
+        finish(proc.returncode, err)
+    threading.Thread(target=wait, daemon=True).start()
+
+
 class Controller:
     def __init__(self, channels, read_snapshot=None, read_status=None, run=None, run_command=None,
                  remember=None, route_now=None, update_state=None,
                  load_hotkeys=None, save_hotkeys=None, apply_hotkeys=None, remove_hotkeys=None,
-                 hotkeys_suspended=None):
+                 hotkeys_suspended=None, spawn=None):
         self.channels = channels
         self._read_snapshot = read_snapshot or live.read_snapshot
         self._read_status = read_status or globals()["read_status"]
@@ -67,7 +87,8 @@ class Controller:
         self._remember = remember or apps.remember
         self._route_now = route_now or apps.route_now
         self._update_state = update_state or (lambda change: globals()["update_state"](self.channels, change))
-        bin_dir = os.path.expanduser("~/.local/bin")
+        self._spawn = spawn or _spawn
+        self._bin_dir = bin_dir = os.path.expanduser("~/.local/bin")
         self._load_hotkeys = load_hotkeys or (lambda: hotkeys.load(self.channels))
         self._save_hotkeys = save_hotkeys or hotkeys.save
         self._apply_hotkeys = apply_hotkeys or (
@@ -134,6 +155,16 @@ class Controller:
         except ValueError:
             pass
         self.refresh(status_too=True)
+
+    def restart(self, what, done):
+        """Restart "easyeffects" or the whole audio "engine" in the background;
+        done(code, stderr) when it's over. The live updates reconnect by
+        themselves after PipeWire comes back."""
+        self._spawn([os.path.join(self._bin_dir, "audio-mixer"), "restart", what], done)
+
+    def open_easyeffects(self):
+        """Show EasyEffects' own window (presets, effects)."""
+        self._spawn(["flatpak", "run", easyeffects.APP])
 
     # --------------------------------------------------------------- hotkeys
     def hotkey_map(self):

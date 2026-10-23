@@ -59,8 +59,16 @@ class UiTestBase(unittest.TestCase):
         Adw.init()
 
     def setUp(self):
+        import tempfile
+        from audiomixer.ui import settings
         from audiomixer.ui.controller import Controller
         from audiomixer.ui.window import MixerWindow
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        old_file = settings.WINDOW_FILE
+        settings.WINDOW_FILE = os.path.join(tmp.name, "window.json")
+        self.addCleanup(setattr, settings, "WINDOW_FILE", old_file)
+        self.spawned = []
         self.snap = snapshot(Music_Audio=(25, False))
         self.status = status()
         self.calls, self.commands = [], []
@@ -87,12 +95,15 @@ class UiTestBase(unittest.TestCase):
                                      read_status=lambda ch: self.status,
                                      run=self.calls.append, run_command=self.commands.append,
                                      remember=lambda props, sink: self.moves.append(("remember", props["application.process.binary"], sink)),
-                                     route_now=lambda idx, sink: self.moves.append(("route", list(idx), sink)))
+                                     route_now=lambda idx, sink: self.moves.append(("route", list(idx), sink)),
+                                     spawn=lambda argv, done=None: self.spawned.append((argv, done)))
         self.win = MixerWindow(self.controller)
         self.controller.refresh(status_too=True)
 
     def tearDown(self):
+        from gi.repository import Adw
         self.win.destroy()
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
 
     def strip(self, name):
         return next(s for s in self.win.strips if s.name == name)
@@ -251,11 +262,6 @@ class CompactTest(UiTestBase):
         self.assertIs(row.heading.get_parent(), row)
         self.assertEqual(row.heading.get_label(), "Music")
 
-    def test_wide_layout_can_shrink_below_its_natural_width(self):
-        # Wider content than the window must scroll, not overflow (libadwaita
-        # warns and clips otherwise) until the compact breakpoint takes over.
-        minimum, natural, _, _ = self.win.wide_scroll.measure(Gtk_HORIZONTAL(), -1)
-        self.assertLess(minimum, 720)
 
     def test_compact_and_wide_show_same_volume(self):
         self.snap = snapshot(Music_Audio=(30, True))

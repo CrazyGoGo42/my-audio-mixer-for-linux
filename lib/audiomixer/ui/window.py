@@ -1,13 +1,26 @@
 """The mixer window: Mic | channels | EasyEffects | All Audio."""
 
-from gi.repository import Adw, Gdk, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from ..config import ALL_AUDIO, EE_RETURN, MIC_IN
 from ..live import strip_targets
+from . import style
 from .apps import AppsList
 from .compact import CompactView
-from .settings import load_size, save_size
+from .menu import ThemeSwitcher, apply_theme, primary_menu
+from .settings import load_size, load_theme, save_size, save_theme
 from .strip import SLOTS, ChannelStrip, EasyEffectsStrip, MenuButton, MicStrip, StripWidget
+
+# The wide layout shrinks in steps as the window narrows, then hands over to
+# the compact rows; nothing ever scrolls. Each step with the narrowest window
+# it's shown at (sp: pixels at normal text size). tests/test_ui_layout.py
+# checks every step really fits.
+WIDE_LAYOUTS = (("roomy", 1020), ("snug", 840), ("tight", 720))
+COMPACT_HEIGHT = 560   # a window shorter than this gets the compact rows too
+STRIP_SPACING = {"roomy": 8, "snug": 6, "tight": 4}
+SMALLEST = (340, 380)  # the compact rows with something playing on every channel
+RESTARTS = {"engine": ("the audio engine", "Audio engine"),
+            "easyeffects": ("EasyEffects", "EasyEffects")}
 
 
 def strip_title(channels, name):
@@ -34,15 +47,24 @@ def save_png(widget, path):
 class MixerWindow(Adw.ApplicationWindow):
     def __init__(self, controller, application=None):
         super().__init__(application=application, title="Audio Mixer")
+        style.install()
         # First run: as wide as everything needs (-1); later: the size it last had.
         self.set_default_size(*(load_size() or (-1, 760)))
         self.controller = controller
+        theme = load_theme()
+        apply_theme(theme)
 
         toolbar = Adw.ToolbarView()
-        toolbar.add_top_bar(Adw.HeaderBar())
+        header = Adw.HeaderBar()
+        self.menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic", tooltip_text="Menu", primary=True)
+        self.menu_button.set_menu_model(primary_menu())
+        self.theme_switcher = ThemeSwitcher(theme, self.set_theme)
+        self.menu_button.get_popover().add_child(self.theme_switcher, "theme")
+        header.pack_end(self.menu_button)
+        toolbar.add_top_bar(header)
+        self._add_actions()
         self.body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        for side in ("top", "bottom", "start", "end"):
-            getattr(self.body, f"set_margin_{side}")(12)
+        self.body.add_css_class("mixer-body")
 
         # Output slots: which device A1–A4 are.
         slots_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -78,34 +100,29 @@ class MixerWindow(Adw.ApplicationWindow):
         self.apps = AppsList(controller)
         apps_scroll = Gtk.ScrolledWindow()
         apps_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        apps_scroll.set_min_content_height(90)
+        apps_scroll.set_min_content_height(70)
         apps_scroll.set_propagate_natural_height(True)
         apps_scroll.set_max_content_height(260)
         apps_scroll.set_child(self.apps)
         self.body.append(apps_scroll)
 
-        # Narrow window -> compact rows (a tiny mixer in a corner).
+        # Narrow (or short) window -> compact rows (a tiny mixer in a corner).
         self.compact = CompactView(controller, lambda name: strip_title(channels, name))
         self.compact_strips = self.compact.strips
-        compact_scroll = Gtk.ScrolledWindow()
-        compact_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        compact_scroll.set_child(self.compact)
-        # Wider than the window? Scroll sideways until the compact breakpoint.
-        self.wide_scroll = Gtk.ScrolledWindow()
-        self.wide_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        self.wide_scroll.set_propagate_natural_width(True)
-        self.wide_scroll.set_propagate_natural_height(True)
-        self.wide_scroll.set_child(self.body)
-        self.stack = Gtk.Stack()
-        self.stack.add_named(self.wide_scroll, "wide")
-        self.stack.add_named(compact_scroll, "compact")
-        self.stack.set_visible_child_name("wide")
-        breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 720sp"))
-        breakpoint.add_setter(self.stack, "visible-child-name", "compact")
-        self.add_breakpoint(breakpoint)
-        self.set_size_request(320, 300)
+        self.stack = Gtk.Stack(hhomogeneous=False, vhomogeneous=False)  # sized by what's shown
+        self.stack.add_named(self.body, "wide")
+        self.stack.add_named(self.compact, "compact")
+        self.layout = None
+        self.set_layout("roomy")
+        self._breakpoints = {}
+        for (name, _), (_, wider_from) in zip(WIDE_LAYOUTS[1:], WIDE_LAYOUTS):
+            self._add_breakpoint(f"max-width: {wider_from}sp", name)
+        self._add_breakpoint(f"max-width: {WIDE_LAYOUTS[-1][1]}sp or max-height: {COMPACT_HEIGHT}sp", "compact")
+        self.connect("notify::current-breakpoint", self._on_breakpoint)
+        self.set_size_request(*SMALLEST)
 
-        toolbar.set_content(self.stack)
+        self.toast_overlay = Adw.ToastOverlay(child=self.stack)
+        toolbar.set_content(self.toast_overlay)
         self.set_content(toolbar)
         controller.subscribe(self)
         # Remember the size whenever it changes: an always-open window usually
@@ -114,6 +131,84 @@ class MixerWindow(Adw.ApplicationWindow):
         self.connect("notify::default-width", self._size_changed)
         self.connect("notify::default-height", self._size_changed)
 
+    # --------------------------------------------------------------- layout
+    def _add_breakpoint(self, condition, layout):
+        breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(condition))
+        self.add_breakpoint(breakpoint)   # added last = wins when several match
+        self._breakpoints[breakpoint] = layout
+
+    def _on_breakpoint(self, *_):
+        self.set_layout(self._breakpoints.get(self.get_current_breakpoint(), "roomy"))
+
+    def set_layout(self, name):
+        """One of WIDE_LAYOUTS' steps, or "compact"."""
+        self.layout = name
+        self.stack.set_visible_child_name("compact" if name == "compact" else "wide")
+        for step, _ in WIDE_LAYOUTS:
+            (self.body.add_css_class if step == name else self.body.remove_css_class)(step)
+        if name in STRIP_SPACING:
+            self.strips_row.set_spacing(STRIP_SPACING[name])
+
+    # ----------------------------------------------------------------- menu
+    def _add_actions(self):
+        for name, callback in (("open-easyeffects", lambda: self.controller.open_easyeffects()),
+                               ("restart-easyeffects", lambda: self.restart("easyeffects")),
+                               ("restart-engine", lambda: self.engine_restart_dialog().present(self)),
+                               ("quit", lambda: self.close())):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", lambda _a, _p, cb=callback: cb())
+            self.add_action(action)
+        app = self.get_application()
+        if app:
+            app.set_accels_for_action("win.quit", ["<Control>q"])
+
+    def set_theme(self, theme):
+        apply_theme(theme)
+        save_theme(theme)
+
+    def show_toast(self, text, lasting=False):
+        toast = Adw.Toast.new(text)
+        if lasting:
+            toast.set_timeout(0)   # until it's dismissed
+        self.toast_overlay.add_toast(toast)
+        return toast
+
+    def engine_restart_dialog(self):
+        dialog = Adw.AlertDialog.new(
+            "Restart the audio engine?",
+            "All sound stops for a few seconds while PipeWire restarts. "
+            "EasyEffects and your levels come back by themselves.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("restart", "Restart")
+        dialog.set_response_appearance("restart", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", lambda _d, response: response == "restart" and self.restart("engine"))
+        return dialog
+
+    def restart(self, what):
+        """Restart EasyEffects or the whole engine; one restart at a time."""
+        thing, title = RESTARTS[what]
+        actions = [self.lookup_action(n) for n in ("restart-engine", "restart-easyeffects")]
+        for action in actions:
+            action.set_enabled(False)
+        pending = self.show_toast(f"Restarting {thing}…", lasting=True)
+
+        def done(code, err):
+            for action in actions:
+                action.set_enabled(True)
+            if pending:
+                pending.dismiss()
+            lines = [line.strip() for line in (err or "").splitlines() if line.strip()]
+            if code != 0:
+                self.show_toast(f"Couldn't restart {thing}: {lines[-1] if lines else f'error {code}'}")
+            elif lines:   # audio-routes-apply: up, but something isn't wired yet
+                self.show_toast(f"{title} restarted, but not everything is connected yet")
+            else:
+                self.show_toast(f"{title} restarted")
+        self.controller.restart(what, done)
+
+    # ------------------------------------------------------------------ size
     def _size_changed(self, *_):
         if self._size_save_id is None:
             self._size_save_id = GLib.timeout_add(1000, self._size_timeout)
