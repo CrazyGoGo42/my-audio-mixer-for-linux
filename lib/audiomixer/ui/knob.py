@@ -15,6 +15,13 @@ DRAG_PIXELS = 160          # a drag this long sweeps the whole range
 START, SWEEP = 0.75 * math.pi, 1.5 * math.pi   # 7:30 round to 4:30, like a real knob
 
 
+def clicked(widget):
+    """The widget was the last one clicked in its window. Unlike has_focus(), it
+    stays true while the window is in the background, so the wheel works there too."""
+    root = widget.get_root()
+    return root is not None and root.get_focus() is widget
+
+
 def value_text(value, signed=True):
     if value == 0:
         return "0"
@@ -108,9 +115,10 @@ class Knob(Gtk.DrawingArea):
         return True
 
     def _on_wheel(self, _ctl, _dx, dy):
-        # Like the faders: the wheel turns it only once it was clicked, so
-        # scrolling past never changes the sound.
-        if not self.has_focus():
+        # Unlike a fader, a knob takes the wheel only once clicked: knobs are
+        # small and sit right by the faders, so a wheel meant for one never
+        # turns a knob on the way.
+        if not clicked(self):
             return False
         self.step(-1 if dy > 0 else 1)
         return True

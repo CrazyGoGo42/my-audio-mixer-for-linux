@@ -55,6 +55,9 @@ level in %. From left to right:
 | **EasyEffects** | Everything with FX on, after your EasyEffects preset, and where it plays.     |
 | **All Audio**   | All channels mixed — pick it as an input in OBS (it doesn't include your mic). |
 
+- **Faders**: drag them, or point at one and use the mouse wheel — 1 % a
+  notch, 2 % while you keep spinning. No click needed, even while you work in
+  another window.
 - **Treble, Mid and Bass knobs** (±12 dB): drag up or down to turn them,
   double-click to set them back to 0. Click one first and the mouse wheel or
   arrow keys turn it too.

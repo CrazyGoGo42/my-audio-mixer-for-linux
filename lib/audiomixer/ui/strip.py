@@ -1,16 +1,18 @@
 """One mixer strip: title, volume slider + meter, %, mute."""
 
+import math
 import time
 
-from gi.repository import GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk
 
 from .knob import Knob
 from .tips import tip
 
 
-def guard_wheel(scale, owner):
-    """A mouse wheel over an unfocused fader scrolls the window instead of
-    changing a level (scrolling the list must never move, or unmute, anything)."""
+def take_wheel(scale, owner):
+    """The mouse wheel over a fader moves it in our own small steps, before GTK
+    does (10 % a notch). No click needed, and the window needn't be in front:
+    no fader sits in anything that scrolls, so the wheel there is meant for it."""
     wheel = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.BOTH_AXES)
     wheel.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
     wheel.connect("scroll", lambda c, dx, dy: owner.on_scroll(c, dx, dy, scale))
@@ -25,6 +27,12 @@ SPECIAL_TARGETS = {"Mic_In": "mic", "EE_Return": "fx", "All_Audio": "all"}
 TOUCH_HOLD = 0.6
 WRITE_DELAY_MS = 60  # coalesce slider writes while dragging
 
+# The wheel over a fader (GTK's own step is 10 % a notch): 1 % a notch
+# turned slowly, 2 % while it keeps spinning. A touchpad reports pixels.
+WHEEL_STEP, WHEEL_FAST_STEP = 1, 2
+WHEEL_FAST_GAP = 0.12        # s between notches that counts as spinning
+TOUCHPAD_PX_PER_NOTCH = 20
+
 
 class StripWidget(Gtk.Box):
     """A strip: tall card (wide layout) or one slim row (compact layout). Both
@@ -38,6 +46,8 @@ class StripWidget(Gtk.Box):
         self._updating = False
         self._pending = None
         self._write_id = None
+        self._wheel_at = 0.0
+        self._wheel_rest = 0.0   # part notches (fine wheels, touchpads) still to add up
 
         self.heading = Gtk.Label(label=title)
         self.heading.add_css_class("heading")
@@ -50,7 +60,7 @@ class StripWidget(Gtk.Box):
             Gtk.Orientation.HORIZONTAL if compact else Gtk.Orientation.VERTICAL, 0, 100, 1)
         self.scale.set_draw_value(False)
         self.scale.connect("value-changed", self._on_value_changed)
-        guard_wheel(self.scale, self)
+        take_wheel(self.scale, self)
         # A Mic level change never unmutes it (a muted mic must not go live by itself).
         self.unmute_on_change = name != "Mic_In"
         self.meter = Gtk.LevelBar()
@@ -225,14 +235,20 @@ class StripWidget(Gtk.Box):
         if hasattr(root, "show_renamed"):
             root.show_renamed(old, label.strip())
 
-    def on_scroll(self, _controller, _dx, dy, scale=None):
+    def on_scroll(self, controller, dx, dy, scale=None):
         scale = scale or self.scale
-        if scale.has_focus():
-            return False  # the user clicked it first: the wheel adjusts it
-        scrolled = self.get_ancestor(Gtk.ScrolledWindow)
-        if scrolled is not None:
-            adj = scrolled.get_vadjustment()
-            adj.set_value(adj.get_value() + dy * 40)
+        horizontal = scale.get_orientation() == Gtk.Orientation.HORIZONTAL
+        notches = -dy if dy else (dx if horizontal else 0)
+        if controller.get_unit() == Gdk.ScrollUnit.SURFACE:
+            notches /= TOUCHPAD_PX_PER_NOTCH
+        now = time.monotonic()
+        step = WHEEL_FAST_STEP if now - self._wheel_at < WHEEL_FAST_GAP else WHEEL_STEP
+        self._wheel_at = now
+        total = self._wheel_rest + notches * step
+        whole = math.trunc(total)
+        self._wheel_rest = total - whole
+        if whole:
+            scale.set_value(round(scale.get_value()) + whole)
         return True
 
     def _on_mute_toggled(self, button):

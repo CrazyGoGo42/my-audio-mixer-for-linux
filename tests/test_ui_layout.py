@@ -80,6 +80,15 @@ class KnobTest(UiTestBase):
         knob.step(-1)
         self.assertEqual(knob.get_value(), 0.5)
 
+    def test_a_clicked_knob_takes_the_wheel_with_the_window_in_the_background(self):
+        music = self.strip("Music_Audio")
+        music.get_root().set_focus(music.bass)             # what clicking it does
+        self.assertFalse(music.bass.has_focus())           # the window isn't active
+        self.assertTrue(music.bass._on_wheel(None, 0, -1))
+        self.assertEqual(music.bass.get_value(), 0.5)
+        self.assertFalse(music.treble._on_wheel(None, 0, -1))   # not clicked: scrolls past
+        self.assertEqual(music.treble.get_value(), 0)
+
     def test_a_knob_shows_its_value_itself_and_its_tooltip_stays_its_name(self):
         from audiomixer.ui.knob import value_text
         music = self.strip("Music_Audio")

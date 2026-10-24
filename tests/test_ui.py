@@ -424,11 +424,12 @@ class ReviewFixesTest(UiTestBase):
         self.assertEqual(self.moves, [("remember", "audacity", "Default_Audio")])
         self.assertTrue(audacity.channel_toggles[0].get_active())
 
-    def test_wheel_over_a_fader_scrolls_instead_of_changing_volume(self):
-        music = self.strip("Music_Audio")
-        self.assertTrue(music.on_scroll(None, 0, 1))   # consumed, not passed to the fader
-        self.assertEqual(music.scale.get_value(), 25)
-        self.assertEqual(self.calls, [])
+    def test_no_fader_sits_in_anything_that_scrolls(self):
+        # The wheel over "Playing now" scrolls that list and can't land on a
+        # fader, so the wheel over a fader is always meant for it.
+        from gi.repository import Gtk
+        for strip in self.win.strips + self.win.compact.strips:
+            self.assertIsNone(strip.get_ancestor(Gtk.ScrolledWindow), strip.name)
 
     def test_changing_the_mic_level_never_unmutes_it(self):
         mic = self.strip("Mic_In")
@@ -472,6 +473,79 @@ class ReviewFixesTest(UiTestBase):
                 self.assertEqual(settings.load_size(), (800, 600))
             finally:
                 settings.WINDOW_FILE = old
+
+
+class FaderWheelTest(UiTestBase):
+    """The wheel over a fader: 1 % a notch when turned slowly or a notch at a
+    time, 2 % while it keeps spinning (GTK's own step was 10 %)."""
+
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        self.now = 100.0
+        clock = mock.patch("time.monotonic", lambda: self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def wheel(self, strip, dy, after=0.5, unit="WHEEL"):
+        import types
+        from gi.repository import Gdk
+        self.now += after
+        controller = types.SimpleNamespace(get_unit=lambda: getattr(Gdk.ScrollUnit, unit))
+        return strip.on_scroll(controller, 0, dy)
+
+    def test_a_notch_at_a_time_moves_one_percent(self):
+        music = self.strip("Music_Audio")
+        self.assertTrue(self.wheel(music, -1))             # up: louder
+        self.assertEqual(music.scale.get_value(), 26)
+        self.wheel(music, 1)
+        self.wheel(music, 1)
+        self.assertEqual(music.scale.get_value(), 24)
+        music.flush()
+        self.assertEqual(self.calls[0], ["pactl", "set-sink-volume", "Music_Audio", "24%"])
+
+    def test_spinning_the_wheel_moves_two_percent_a_notch(self):
+        music = self.strip("Music_Audio")
+        for _ in range(5):
+            self.wheel(music, -1, after=0.04)
+        self.assertEqual(music.scale.get_value(), 34)      # the first notch 1 %, then 2 % each
+
+    def test_it_stops_at_the_ends(self):
+        music = self.strip("Music_Audio")
+        music.scale.set_value(99)
+        for _ in range(3):
+            self.wheel(music, -1, after=0.04)
+        self.assertEqual(music.scale.get_value(), 100)
+        for _ in range(60):
+            self.wheel(music, 1, after=0.04)
+        self.assertEqual(music.scale.get_value(), 0)
+
+    def test_a_fine_wheel_adds_its_part_notches_up(self):
+        music = self.strip("Music_Audio")
+        for _ in range(4):
+            self.wheel(music, -0.25)                       # a high-resolution wheel, turned slowly
+        self.assertEqual(music.scale.get_value(), 26)
+
+    def test_a_touchpad_counts_pixels_not_notches(self):
+        music = self.strip("Music_Audio")
+        self.wheel(music, -10, unit="SURFACE")             # half a notch: not yet
+        self.assertEqual(music.scale.get_value(), 25)
+        self.wheel(music, -10, unit="SURFACE")
+        self.assertEqual(music.scale.get_value(), 26)
+
+    def test_the_compact_slider_too(self):
+        row = next(r for r in self.win.compact.strips if r.name == "Music_Audio")
+        self.wheel(row, -1)
+        self.assertEqual(row.scale.get_value(), 26)
+
+    def test_no_click_needed_even_with_the_window_in_the_background(self):
+        # Seen live: the pointer over Browser, the wheel turned, nothing moved.
+        # It used to take a click first.
+        music = self.strip("Music_Audio")
+        self.assertFalse(self.win.is_active())
+        self.assertIsNot(self.win.get_focus(), music.scale)
+        self.assertTrue(self.wheel(music, -1))
+        self.assertEqual(music.scale.get_value(), 26)
 
 
 class MeterRecoveryTest(UiTestBase):
